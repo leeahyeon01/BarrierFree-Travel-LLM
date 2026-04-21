@@ -3,6 +3,7 @@
 """
 
 import os
+from datetime import date
 import requests
 from dotenv import load_dotenv
 
@@ -85,6 +86,56 @@ def fetch_area_codes() -> list[dict]:
         item_list = [item_list]
 
     return [{"지역명": i.get("name", ""), "코드": i.get("code", "")} for i in item_list]
+
+
+def search_festivals(area_name: str | None = None, num_of_rows: int = 20) -> list[dict]:
+    """
+    현재 날짜 기준 진행 중 또는 예정된 무장애 축제 검색 (searchFestival2)
+
+    Args:
+        area_name: 지역명 (None이면 전국)
+        months_ahead: 오늘부터 몇 개월 앞까지 조회 (기본 3개월)
+        num_of_rows: 조회 건수 (최대 20)
+    """
+    today = date.today().strftime("%Y%m%d")
+    extra: dict = {
+        "numOfRows": min(num_of_rows, 20),
+        "pageNo": 1,
+        "eventStartDate": today,
+    }
+    if area_name:
+        area_code = AREA_MAP.get(area_name)
+        if not area_code:
+            available = ", ".join(AREA_MAP.keys())
+            return [{"error": f"'{area_name}' 지역을 찾을 수 없습니다. 사용 가능한 지역: {available}"}]
+        extra["areaCode"] = area_code
+
+    data = _get("searchFestival2", extra)
+    if "error" in data:
+        return [data]
+
+    items = data.get("response", {}).get("body", {}).get("items", {})
+    if not items:
+        region_label = area_name or "전국"
+        return [{"message": f"{region_label}에서 현재 진행/예정된 무장애 축제 정보가 없습니다."}]
+
+    item_list = items.get("item", [])
+    if isinstance(item_list, dict):
+        item_list = [item_list]
+
+    results = []
+    for item in item_list:
+        addr = (item.get("addr1", "") + " " + item.get("addr2", "")).strip()
+        results.append({
+            "이름": item.get("title", ""),
+            "주소": addr if addr else "주소 정보 없음",
+            "전화번호": item.get("tel", "정보 없음"),
+            "시작일": item.get("eventstartdate", ""),
+            "종료일": item.get("eventenddate", ""),
+            "content_id": item.get("contentid", ""),
+            "카테고리": "무장애 축제",
+        })
+    return results
 
 
 def search_places(area_name: str, category: str, num_of_rows: int = 10) -> list[dict]:

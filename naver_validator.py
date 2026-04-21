@@ -378,6 +378,58 @@ def analyze_images(image_urls: list[str], facility_name: str) -> dict:
         return {"error": f"Vision 분석 실패: {str(e)}"}
 
 
+# ── 축제 검색 함수 ────────────────────────────────────────────────────────────
+
+def search_barrier_free_festivals(area: str = "", display: int = 10) -> list[dict]:
+    """
+    네이버 뉴스·블로그에서 현재 연도 기준 최신 무장애 축제를 실시간 검색.
+    date 순 정렬로 가장 최근 결과를 우선 반환.
+
+    Args:
+        area: 지역 필터 (예: "서울", "부산"). 빈 문자열이면 전국.
+        display: 쿼리당 최대 결과 수
+    Returns: [{title, date, link, source, snippet}, ...]
+    """
+    from datetime import date
+    year = date.today().year
+    region = f"{area} " if area else ""
+
+    # 연도 없이 검색 → sort=date 로 최신 기사가 자동으로 상위 노출
+    queries = [
+        f"{region}무장애 축제",
+        f"{region}배리어프리 축제",
+        f"{region}장애인 축제",
+        f"{region}동행 축제",
+        f"{region}무장애 행사",
+        f"{region}배리어프리 행사",
+        f"{region}장애인 문화 행사",
+    ]
+
+    results, seen = [], set()
+    # news 우선(최신성), blog 보완
+    for endpoint in ("news", "blog"):
+        for q in queries:
+            for item in _naver_get(endpoint, q, display):
+                link = item.get("link", "")
+                if link in seen:
+                    continue
+                seen.add(link)
+                raw_date = item.get("pubDate", "") or item.get("postdate", "")
+                results.append({
+                    "title":   _strip_html(item.get("title", "")),
+                    "snippet": _strip_html(item.get("description", "")),
+                    "date":    raw_date,
+                    "link":    link,
+                    "source":  endpoint,
+                })
+
+    # 날짜 내림차순 정렬 후 현재 연도 결과 우선 노출
+    results.sort(key=lambda x: x.get("date", ""), reverse=True)
+    current_year_results = [r for r in results if str(year) in r.get("date", "") or str(year) in r.get("title", "") or str(year) in r.get("snippet", "")]
+    other_results = [r for r in results if r not in current_year_results]
+    return (current_year_results + other_results)[:30]
+
+
 # ── 메인 검증 함수 ────────────────────────────────────────────────────────────
 
 def validate_accessibility(

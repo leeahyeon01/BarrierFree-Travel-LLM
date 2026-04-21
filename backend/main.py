@@ -1,3 +1,10 @@
+import sys
+import os
+_backend_dir = os.path.dirname(os.path.abspath(__file__))
+_project_dir = os.path.dirname(_backend_dir)
+sys.path.insert(0, _backend_dir)   # routers 패키지 탐색용
+sys.path.insert(0, _project_dir)   # tour_api, naver_validator 등 탐색용
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import chat, places, transport, validation

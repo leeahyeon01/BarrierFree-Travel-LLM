@@ -27,6 +27,23 @@ SYSTEM_PROMPT = """
 - 결과를 번호 목록으로 정리하고, 번호 선택 시 get_detail 호출
 - 검색 결과가 없으면 인근 지역·다른 카테고리를 제안
 
+[축제 검색 역할] ← 중요
+- 사용자가 "축제", "행사", "배리어프리 축제", "무장애 축제", "장애인 축제" 등 축제·행사 관련 단어를 언급하면
+  반드시 search_barrier_free_festivals 를 호출하세요.
+- 절대로 자신의 학습 지식으로 축제를 답하지 마세요. 반드시 search_barrier_free_festivals 를 호출하세요.
+- 절대로 search_places 로 축제를 검색하지 마세요. search_places 는 관광공사 정적 데이터라 최신 축제가 없습니다.
+- search_barrier_free_festivals 는 네이버 실시간 검색으로 현재 연도 최신 축제를 가져옵니다.
+- 결과를 아래 형식으로 출력하세요. 설명은 반드시 20자 이내 한 줄로 요약하고 링크는 생략하세요:
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎉 {지역} 최신 무장애 축제 (네이버 실시간)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. {title} | 📅 {date} | {20자 이내 설명}
+2. {title} | 📅 {date} | {20자 이내 설명}
+...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+링크는 사용자가 번호를 선택할 때만 제공하세요.
+
 [경로 안내 역할]
 사용자가 목적지를 정하고 챗봇에게 어떻게 가냐고 물어보는 등 경로 안내를 요청하면 plan_accessible_route 를 호출하고,
 반환된 데이터를 반드시 아래 형식으로 출력하세요. 카카오맵 대중교통 링크도 제공하세요.
@@ -228,6 +245,29 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    # ── 최신 무장애 축제 실시간 검색 ──────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "search_barrier_free_festivals",
+            "description": (
+                "네이버 뉴스·블로그에서 현재 연도 기준 최신 무장애/배리어프리 축제를 실시간 검색합니다. "
+                "사용자가 축제를 물어보면 반드시 이 함수를 호출하세요. "
+                "Vector DB나 관광공사 API가 아닌 실시간 네이버 검색을 사용하므로 항상 최신 정보를 반환합니다."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "area": {
+                        "type": "string",
+                        "description": "검색할 지역 (예: '서울', '부산'). 전국 검색 시 빈 문자열.",
+                        "default": "",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
     # ── 접근성 자동 검증 ──────────────────────────────────────────────────────
     {
         "type": "function",
@@ -279,6 +319,8 @@ def execute_tool(name: str, args: dict) -> str:
         result = transport_api.get_subway_elevator_info(**args)
     elif name == "get_disability_taxi_info":
         result = transport_api.get_disability_taxi_info(**args)
+    elif name == "search_barrier_free_festivals":
+        result = naver_validator.search_barrier_free_festivals(**args)
     elif name == "validate_accessibility":
         result = naver_validator.validate_accessibility(**args)
     else:
@@ -295,6 +337,7 @@ PROGRESS_MSG = {
     "get_subway_elevator_info": lambda a: f"  [엘리베이터] {a.get('station_name')} 엘리베이터 상태 조회 중...",
     "get_disability_taxi_info": lambda a: f"  [콜택시] {a.get('region')} 장애인 콜택시 정보 조회 중...",
     "fetch_area_codes":         lambda a: "  [지역코드] 지역 목록 조회 중...",
+    "search_barrier_free_festivals": lambda a: f"  [축제 검색] {a.get('area', '전국')} 최신 무장애 축제 네이버 검색 중...",
     "validate_accessibility":   lambda a: f"  [접근성 검증] '{a.get('facility_name')}' 네이버 리뷰 분석 중...",
 }
 
