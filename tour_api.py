@@ -37,6 +37,7 @@ AREA_MAP = {
 CONTENT_TYPE_MAP = {
     "관광지": "12",
     "문화시설": "14",
+    "축제": "15",
     "숙박": "32",
     "음식점": "39",
 }
@@ -189,10 +190,32 @@ def search_places(area_name: str, category: str, num_of_rows: int = 10) -> list[
                 "전화번호": item.get("tel", "정보 없음"),
                 "content_id": item.get("contentid", ""),
                 "카테고리": category,
+                "image": item.get("firstimage", ""),
             }
         )
 
     return results
+
+
+def search_random_places(category: str, count: int = 6) -> list[dict]:
+    """
+    전국 랜덤 지역에서 카테고리별 무장애 장소를 가져온다.
+    이미지가 있는 결과만 필터링하여 count개 반환.
+    """
+    import random
+    areas = list(AREA_MAP.keys())
+    random.shuffle(areas)
+
+    results = []
+    for area in areas:
+        if len(results) >= count:
+            break
+        places = search_places(area, category, num_of_rows=20)
+        with_img = [p for p in places if p.get("image")]
+        results.extend(with_img)
+
+    random.shuffle(results)
+    return results[:count]
 
 
 def get_detail(content_id: str) -> dict:
