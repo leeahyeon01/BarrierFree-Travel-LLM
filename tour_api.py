@@ -134,7 +134,8 @@ def search_festivals(area_name: str | None = None, num_of_rows: int = 20) -> lis
             "시작일": item.get("eventstartdate", ""),
             "종료일": item.get("eventenddate", ""),
             "content_id": item.get("contentid", ""),
-            "카테고리": "무장애 축제",
+            "카테고리": "축제",
+            "image": item.get("firstimage", ""),
         })
     return results
 

@@ -430,6 +430,33 @@ def search_barrier_free_festivals(area: str = "", display: int = 10) -> list[dic
     return (current_year_results + other_results)[:30]
 
 
+def fetch_og_image(url: str) -> str:
+    """기사/블로그 URL에서 og:image 메타태그 이미지 URL 추출. 실패 시 빈 문자열 반환."""
+    if not url:
+        return ""
+    try:
+        resp = requests.get(
+            url,
+            timeout=4,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            allow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return ""
+        html = resp.text
+        # property="og:image" content="..."
+        m = re.search(r'property=["\']og:image["\']\s+content=["\'](https?://[^"\'>\s]+)', html)
+        if not m:
+            # content="..." property="og:image"
+            m = re.search(r'content=["\'](https?://[^"\'>\s]+)["\']\s+property=["\']og:image["\']', html)
+        if not m:
+            # name="og:image"
+            m = re.search(r'name=["\']og:image["\']\s+content=["\'](https?://[^"\'>\s]+)', html)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
 # ── 메인 검증 함수 ────────────────────────────────────────────────────────────
 
 def validate_accessibility(
