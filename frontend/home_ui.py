@@ -4,6 +4,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 import tour_api
 import naver_validator
+import transport_api
 
 st.set_page_config(page_title="트래블리 - 무장애 여행", page_icon="♿", layout="wide")
 
@@ -37,6 +38,8 @@ defaults = {
     "region_places_si":  None,
     "banner_festivals":  [],
     "banner_idx":        0,
+    "route_result":      None,
+    "route_place_id":    None,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -252,8 +255,8 @@ def cached_detail(content_id: str) -> dict:
     return tour_api.get_detail(content_id)
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def cached_accessibility(name: str, address: str) -> dict:
-    return naver_validator.validate_accessibility(name, address)
+def cached_accessibility(name: str, address: str, image_urls: tuple = ()) -> dict:
+    return naver_validator.validate_accessibility(name, address, image_urls=list(image_urls))
 
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_naver_festivals() -> list[dict]:
@@ -437,6 +440,8 @@ def region_modal():
         st.session_state.region_places = []
         st.session_state.region_places_si = None
         st.session_state.view = "list"
+        # 카테고리 칩 상태 초기화 (새 지역 선택 시 전체로 리셋)
+        st.session_state.pop(f"cat_pills_{si}", None)
 
     cities = list(REGIONS.keys())
     rows = [cities[i:i+3] for i in range(0, len(cities), 3)]
@@ -601,43 +606,72 @@ def render_detail():
 
     st.markdown('<hr class="divider"/>', unsafe_allow_html=True)
     st.markdown("#### ♿ 실시간 접근성 검증")
-    st.caption("네이버 블로그·지식iN 리뷰 기반 자동 분석")
+    st.caption("네이버 블로그·지식iN 리뷰 + GPT-4o 추론 기반 자동 분석")
 
     if st.session_state.accessibility is None:
         with st.spinner("네이버 리뷰 분석 중..."):
-            st.session_state.accessibility = cached_accessibility(name, addr)
+            st.session_state.accessibility = cached_accessibility(name, addr, tuple(images))
         st.rerun()
 
-    acc      = st.session_state.accessibility
-    risk     = acc.get("overall_risk", "❓")
-    summary  = accessibility_summary(acc, name)
-    metrics  = acc.get("gpt_inference", {}).get("metrics", {})
-    data_info= acc.get("data_collected", {})
+    acc       = st.session_state.accessibility
+    risk      = acc.get("overall_risk", "❓")
+    data_info = acc.get("data_collected", {})
+    gpt       = acc.get("gpt_inference", {})
+    metrics   = gpt.get("metrics", {})
+    confidence    = gpt.get("confidence", "")
+    gpt_summary   = gpt.get("summary", "")
+    conflicts     = gpt.get("conflicts_with_official", [])
+    positives     = acc.get("positive_signals", [])
+    warnings      = acc.get("warnings", [])
+    top_sources   = acc.get("top_sources", [])
+    vision        = acc.get("vision_analysis", {})
 
     badge_css = "access-badge-green" if "🟢" in risk else ("access-badge-red" if "🔴" in risk else "access-badge-yellow")
+    conf_label = {"high": "🟢 높음", "medium": "🟡 보통", "low": "🔴 낮음"}.get(confidence, "")
+    summary_html = f'<p style="font-size:14px;color:#333;margin:8px 0 0;line-height:1.6">💬 {gpt_summary}</p>' if gpt_summary else ""
 
     st.markdown(f"""
     <div class="access-card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:6px">
             <span class="{badge_css}">{risk}</span>
-            <span style="font-size:11px;color:#aaa">블로그 {data_info.get('blog_posts',0)}건 · 지식iN {data_info.get('kin_posts',0)}건</span>
+            <span style="font-size:11px;color:#aaa">
+                {f"신뢰도 {conf_label} &nbsp;·&nbsp; " if conf_label else ""}블로그 {data_info.get('blog_posts',0)}건 · 지식iN {data_info.get('kin_posts',0)}건
+            </span>
         </div>
-        <p style="font-size:14px;color:#333;margin:0 0 14px;line-height:1.6">💬 {summary}</p>
+        {summary_html}
+    </div>
     """, unsafe_allow_html=True)
 
+    # ── 긍정 신호 칩 ─────────────────────────────────────────────────────────
+    if positives:
+        chips = " ".join(
+            f'<span style="background:#e8f5e9;color:#2e7d32;border-radius:20px;'
+            f'padding:3px 10px;font-size:12px;margin:2px;display:inline-block">✅ {kw}</span>'
+            for kw in positives[:8]
+        )
+        st.markdown(f'<div style="margin:6px 0 10px">{chips}</div>', unsafe_allow_html=True)
+
+    # ── 6개 접근성 지표 ───────────────────────────────────────────────────────
     METRIC_LABELS = {
         "entrance_step":       ("🚪", "입구 단차"),
         "elevator":            ("🛗", "엘리베이터"),
         "accessible_restroom": ("🚻", "장애인 화장실"),
         "accessible_parking":  ("🅿️", "장애인 주차"),
         "aisle_width":         ("↔️", "통로 폭"),
+        "table_height":        ("🍽️", "테이블 높이"),
     }
-    rows_html = ""
+
     for key, (icon, label) in METRIC_LABELS.items():
         m = metrics.get(key, {})
         status = m.get("status", "❓")
+        evidence = m.get("evidence", [])
+        inference_note = m.get("inference_note", "")
+
         if key == "entrance_step":
             v = "단차 없음" if m.get("has_step") is False else ("단차 있음" if m.get("has_step") else "미확인")
+            h = m.get("estimated_height_cm")
+            if h:
+                v += f" (~{h}cm)"
             if m.get("has_ramp_alternative"):
                 v += ", 경사로 있음"
         elif key in ("elevator", "accessible_restroom", "accessible_parking"):
@@ -645,30 +679,274 @@ def render_detail():
         elif key == "aisle_width":
             cm = m.get("estimated_cm")
             v = f"약 {cm}cm" if cm else "미확인"
+        elif key == "table_height":
+            cm = m.get("estimated_cm")
+            ttype = m.get("table_type", "")
+            if cm:
+                v = f"약 {cm}cm" + (f" ({ttype})" if ttype and ttype != "미확인" else "")
+            elif ttype and ttype != "미확인":
+                v = ttype
+            else:
+                v = "미확인"
         else:
-            v = "분석 중"
-        rows_html += f'<div class="metric-row"><span>{icon} {label}</span><span style="color:#555">{v} {status}</span></div>'
+            v = "미확인"
 
-    st.markdown(rows_html + "</div>", unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="metric-row"><span>{icon} {label}</span>'
+            f'<span style="color:#555">{v} {status}</span></div>',
+            unsafe_allow_html=True,
+        )
+        if evidence or inference_note:
+            with st.expander("상세 근거", expanded=False):
+                if inference_note:
+                    st.markdown(f"**추론:** {inference_note}")
+                for ev in (evidence or [])[:3]:
+                    if ev == "리뷰 없음 — 지식 기반 추론":
+                        st.caption(ev)
+                    elif ev:
+                        st.markdown(f'> "{ev}"')
 
-    warnings = acc.get("warnings", [])
+    # ── 주의사항 경고 ─────────────────────────────────────────────────────────
     if warnings:
-        with st.expander(f"⚠️ 주의사항 {len(warnings)}건"):
-            for w in warnings[:3]:
-                quotes = w.get("quotes", [])
-                st.markdown(f"- {w.get('severity','')} **{w.get('category','')}**" +
-                            (f' — "{quotes[0]}"' if quotes else ""))
+        with st.expander(f"⚠️ 주의사항 {len(warnings)}건", expanded=True):
+            for w in warnings:
+                excerpt   = w.get("excerpt", "")
+                inference = w.get("inference", "")
+                date_str  = w.get("date", "")
+                link      = w.get("link", "")
+                st.markdown(f"**{w.get('severity','')}** — {w.get('category','')}")
+                if excerpt:
+                    st.markdown(f"> {excerpt}")
+                if inference:
+                    st.caption(f"💡 {inference}")
+                if date_str or link:
+                    st.caption(("출처: " + date_str if date_str else "") + (f"  [링크]({link})" if link else ""))
+                st.divider()
+
+    # ── 공식 정보와 상충 ──────────────────────────────────────────────────────
+    if conflicts:
+        with st.expander(f"🔶 공식 정보와 상충하는 내용 {len(conflicts)}건"):
+            for c in conflicts:
+                st.markdown(f"- **공식 주장:** {c.get('official_claim', '')}")
+                st.markdown(f"  **실제 발견:** {c.get('actual_finding', '')}")
+                if c.get("evidence"):
+                    st.markdown(f'  > "{c.get("evidence")}"')
+
+    # ── 사진 분석 (Vision) ────────────────────────────────────────────────────
+    if vision and not vision.get("error"):
+        with st.expander("📷 사진 분석 결과"):
+            v_risk = vision.get("overall_risk", "")
+            v_conf = vision.get("confidence", "")
+            if v_risk:
+                st.markdown(f"**종합 판정:** {v_risk}" + (f" (신뢰도: {v_conf})" if v_conf else ""))
+            entrance_v = vision.get("entrance", {})
+            if entrance_v:
+                door = entrance_v.get("door_type", "")
+                step = entrance_v.get("step_detected")
+                ramp = entrance_v.get("ramp_detected")
+                parts_v = []
+                if door and door != "미확인":
+                    parts_v.append(f"출입문: {door}")
+                if step is True:
+                    h_v = entrance_v.get("step_height_cm_est")
+                    parts_v.append("단차 발견" + (f" (~{h_v}cm)" if h_v else ""))
+                elif step is False:
+                    parts_v.append("단차 없음")
+                if ramp:
+                    parts_v.append("경사로 있음")
+                if parts_v:
+                    st.markdown("🚪 **입구:** " + " / ".join(parts_v))
+                notes_v = entrance_v.get("notes", "")
+                if notes_v:
+                    st.caption(notes_v)
+            interior_v = vision.get("interior", {})
+            if interior_v:
+                tt_v = interior_v.get("table_type", "")
+                th_v = interior_v.get("table_height_cm_est")
+                aw_v = interior_v.get("aisle_width_cm_est")
+                parts_v = []
+                if tt_v and tt_v != "미확인":
+                    parts_v.append(f"테이블: {tt_v}")
+                if th_v:
+                    parts_v.append(f"높이 ~{th_v}cm")
+                if aw_v:
+                    parts_v.append(f"통로 ~{aw_v}cm")
+                if parts_v:
+                    st.markdown("🏠 **내부:** " + " / ".join(parts_v))
+                notes_v = interior_v.get("notes", "")
+                if notes_v:
+                    st.caption(notes_v)
+            obstacles = vision.get("obstacles", [])
+            facilities = vision.get("facilities", [])
+            if obstacles:
+                st.markdown("⚠️ **장애물:** " + ", ".join(obstacles))
+            if facilities:
+                st.markdown("✅ **편의시설:** " + ", ".join(facilities))
+
+    # ── 분석 출처 ─────────────────────────────────────────────────────────────
+    if top_sources:
+        with st.expander(f"📰 분석 출처 {len(top_sources)}건"):
+            for src in top_sources:
+                title_s = src.get("title", "")
+                date_s  = src.get("date", "")
+                link_s  = src.get("link", "")
+                if title_s and link_s:
+                    st.markdown(f"- [{title_s}]({link_s})" + (f" ({date_s})" if date_s else ""))
+                elif title_s:
+                    st.markdown(f"- {title_s}" + (f" ({date_s})" if date_s else ""))
 
     st.markdown('<hr class="divider"/>', unsafe_allow_html=True)
-    st.markdown("#### 🗺 이 장소에 가고 싶으신가요?")
-    st.info(f"**{name}**까지 가는 법을 알려드릴까요?\n\n출발지를 챗봇에 입력하시면 저상버스·엘리베이터·장애인 콜택시 정보를 안내해드립니다.")
-    kakao_url = f"https://map.kakao.com/?q={name}"
-    st.markdown(
-        f'<a href="{kakao_url}" target="_blank">'
-        f'<button style="background:#FEE500;border:none;border-radius:10px;padding:10px 24px;'
-        f'font-weight:700;font-size:14px;cursor:pointer;width:100%">🗺 카카오맵에서 길찾기</button></a>',
-        unsafe_allow_html=True,
+    st.markdown("#### 🗺 가는 법 안내")
+
+    # 장소가 바뀌면 이전 경로 결과 초기화
+    place_id = place.get("content_id", name)
+    if st.session_state.route_place_id != place_id:
+        st.session_state.route_result   = None
+        st.session_state.route_place_id = place_id
+
+    dest_addr = addr or name
+    origin = st.text_input(
+        "출발지를 입력하세요",
+        placeholder="예: 서울 마포구 홍대입구역",
+        key=f"route_origin_{place_id}",
     )
+    if st.button("♿ 무장애 경로 안내받기", use_container_width=True, type="primary"):
+        if not origin.strip():
+            st.warning("출발지를 입력해 주세요.")
+        else:
+            with st.spinner(f"{origin} → {name} 무장애 경로 분석 중..."):
+                st.session_state.route_result = transport_api.plan_accessible_route(
+                    origin.strip(), dest_addr
+                )
+            st.rerun()
+
+    route = st.session_state.route_result
+    if route:
+        참고 = route.get("참고사항", [])
+        car  = route.get("자동차_경로", {})
+        transit = route.get("대중교통_경로", {})
+        버스정보 = route.get("저상버스", {})
+        엘리베이터 = route.get("엘리베이터", [])
+        고장 = route.get("리프트_고장", [])
+        택시 = route.get("장애인콜택시", {})
+
+        st.markdown(f"""
+        <div style="background:#f8f9ff;border-radius:14px;padding:16px 18px;margin-top:8px;
+                    border-left:4px solid #4A90E2">
+            <p style="font-size:13px;font-weight:700;color:#4A90E2;margin:0 0 10px">
+                🗺 무장애 경로 안내</p>
+            <p style="font-size:12px;color:#555;margin:2px 0">
+                📍 <b>출발지</b>: {route.get("출발지","")}</p>
+            <p style="font-size:12px;color:#555;margin:2px 0 10px">
+                📍 <b>목적지</b>: {route.get("목적지","")}</p>
+        </div>""", unsafe_allow_html=True)
+
+        # 자동차/택시 경로
+        if "distance_km" in car:
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:12px 16px;margin-top:8px;
+                        box-shadow:0 1px 6px rgba(0,0,0,0.07)">
+                <p style="font-size:12px;font-weight:700;color:#333;margin:0 0 6px">🚗 자동차 / 택시</p>
+                <p style="font-size:12px;color:#555;margin:2px 0">
+                    약 {car['distance_km']}km &nbsp;|&nbsp; 예상 {car['duration_min']}분</p>
+                <p style="font-size:12px;color:#888;margin:2px 0">
+                    예상 택시 요금: {car.get('taxi_fare',0):,}원</p>
+            </div>""", unsafe_allow_html=True)
+
+        # 대중교통 경로 (ODsay)
+        if "error" not in transit and transit.get("총_소요시간"):
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:12px 16px;margin-top:8px;
+                        box-shadow:0 1px 6px rgba(0,0,0,0.07)">
+                <p style="font-size:12px;font-weight:700;color:#333;margin:0 0 6px">
+                    🚄 대중교통 (기차/지하철/버스)</p>
+                <p style="font-size:12px;color:#555;margin:2px 0">
+                    총 소요시간: {transit['총_소요시간']} &nbsp;|&nbsp; 요금: {transit['총_요금']}</p>
+                <p style="font-size:12px;color:#555;margin:2px 0">
+                    경로: {transit.get('경로_요약','')}</p>
+                <p style="font-size:11px;color:#888;margin:2px 0">
+                    {transit.get('상세_환승_단계','')}</p>
+            </div>""", unsafe_allow_html=True)
+
+        # 저상버스
+        if isinstance(버스정보, dict) and 버스정보.get("도착정보"):
+            arrivals = [b for b in 버스정보["도착정보"] if "error" not in b and "message" not in b]
+            low_floor = [b for b in arrivals if "저상버스" in b.get("저상버스", "")]
+            if low_floor or arrivals:
+                rows_html = "".join(
+                    f'<p style="font-size:11px;color:#555;margin:2px 0">'
+                    f'{b["버스번호"]} {b["저상버스"]} &nbsp;▶&nbsp; {b["첫번째도착"]}</p>'
+                    for b in (low_floor or arrivals)[:3]
+                )
+                st.markdown(f"""
+                <div style="background:white;border-radius:12px;padding:12px 16px;margin-top:8px;
+                            box-shadow:0 1px 6px rgba(0,0,0,0.07)">
+                    <p style="font-size:12px;font-weight:700;color:#333;margin:0 0 6px">
+                        🚌 저상버스 ({버스정보.get('정류장명','')})</p>
+                    {rows_html}
+                </div>""", unsafe_allow_html=True)
+
+        # 지하철 엘리베이터
+        valid_elev = [e for e in 엘리베이터 if "error" not in e and "message" not in e]
+        if valid_elev:
+            rows_html = "".join(
+                f'<p style="font-size:11px;color:#555;margin:2px 0">'
+                f'{e.get("호선","")} {e.get("역명","")} — {e.get("위치","")}</p>'
+                for e in valid_elev[:3]
+            )
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:12px 16px;margin-top:8px;
+                        box-shadow:0 1px 6px rgba(0,0,0,0.07)">
+                <p style="font-size:12px;font-weight:700;color:#333;margin:0 0 6px">
+                    🛗 지하철 엘리베이터</p>
+                {rows_html}
+            </div>""", unsafe_allow_html=True)
+
+        # 고장 현황
+        valid_fault = [f for f in 고장 if "error" not in f and f.get("상태")]
+        fault_html = "".join(
+            f'<p style="font-size:11px;color:#e53935;margin:2px 0">'
+            f'⚠ {f["역명"]} {f["위치"]} — {f["상태"]}</p>'
+            for f in valid_fault[:3]
+        ) if valid_fault else '<p style="font-size:11px;color:#4CAF50;margin:2px 0">✅ 현재 고장·점검 없음</p>'
+        st.markdown(f"""
+        <div style="background:white;border-radius:12px;padding:12px 16px;margin-top:8px;
+                    box-shadow:0 1px 6px rgba(0,0,0,0.07)">
+            <p style="font-size:12px;font-weight:700;color:#333;margin:0 0 6px">
+                ⚠️ 엘리베이터 점검·고장 현황</p>
+            {fault_html}
+        </div>""", unsafe_allow_html=True)
+
+        # 장애인 콜택시
+        if 택시.get("이름"):
+            st.markdown(f"""
+            <div style="background:white;border-radius:12px;padding:12px 16px;margin-top:8px;
+                        box-shadow:0 1px 6px rgba(0,0,0,0.07)">
+                <p style="font-size:12px;font-weight:700;color:#333;margin:0 0 6px">
+                    ♿ 장애인 콜택시</p>
+                <p style="font-size:12px;color:#555;margin:2px 0">{택시['이름']}</p>
+                <p style="font-size:12px;color:#555;margin:2px 0">📞 {택시['전화']}</p>
+                {'<p style="font-size:11px;color:#888;margin:2px 0">앱: ' + 택시['앱'] + '</p>' if 택시.get('앱') and 택시['앱'] != '없음' else ''}
+            </div>""", unsafe_allow_html=True)
+
+        # 참고사항
+        if 참고:
+            tips = "".join(f'<p style="font-size:11px;color:#555;margin:2px 0">💡 {t}</p>' for t in 참고)
+            st.markdown(f"""
+            <div style="background:#fffde7;border-radius:12px;padding:12px 16px;margin-top:8px">
+                {tips}
+            </div>""", unsafe_allow_html=True)
+
+        # 카카오맵 링크
+        origin_val = route.get("출발지", "")
+        kakao_url = f"https://map.kakao.com/?sName={origin_val}&eName={dest_addr}"
+        st.markdown(
+            f'<a href="{kakao_url}" target="_blank">'
+            f'<button style="background:#FEE500;border:none;border-radius:10px;padding:10px 24px;'
+            f'font-weight:700;font-size:14px;cursor:pointer;width:100%;margin-top:10px">'
+            f'🗺 카카오맵에서 길찾기</button></a>',
+            unsafe_allow_html=True,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -683,6 +961,7 @@ def render_list():
     with h_home:
         st.markdown('<div class="home-btn">', unsafe_allow_html=True)
         if st.button("🏠", key="list_home"):
+            st.session_state.pop(f"cat_pills_{si}", None)
             st.session_state.view = "home"
             st.session_state.selected_category = None
             st.rerun()
@@ -694,14 +973,24 @@ def render_list():
             unsafe_allow_html=True,
         )
 
-    # ── 카테고리 칩 (수평 스크롤) ─────────────────────────────────────────────
-    CHIP_LIST = [("전체", None)] + [(label, label) for _, label in CATEGORIES]
-    chips_html = '<div class="chip-pill-row">'
-    for chip_label, val in CHIP_LIST:
-        active_cls = "active" if cat == val else ""
-        chips_html += f'<a href="?cat={chip_label}" class="chip-pill {active_cls}">{chip_label}</a>'
-    chips_html += '</div>'
-    st.markdown(chips_html, unsafe_allow_html=True)
+    # ── 카테고리 칩 (st.pills — 페이지 이동 없이 인플레이스 전환) ──────────────
+    chip_options = ["전체", "관광지", "문화시설", "축제", "숙박", "음식점"]
+    selected_chip = st.pills(
+        "카테고리",
+        chip_options,
+        default="전체" if cat is None else cat,
+        key=f"cat_pills_{si}",
+        label_visibility="collapsed",
+    )
+    if selected_chip is not None:
+        new_cat = None if selected_chip == "전체" else selected_chip
+        if new_cat != cat:
+            st.session_state.selected_category = new_cat
+            st.session_state.page = 0
+            st.session_state.place_list = []
+            st.session_state.place_list_key = ""
+            st.rerun()
+    cat = st.session_state.selected_category
 
     # ── 장소 데이터 로드 ──────────────────────────────────────────────────────
     if cat is None:
