@@ -71,7 +71,10 @@ SOFT_WARNINGS: dict[str, dict] = {
 # 🟢 긍정 신호
 POSITIVE_SIGNALS: list[str] = [
     "휠체어 이용 가능", "휠체어 가능해요", "휠체어로 갔어요", "휠체어 가져갔",
-    "경사로 있어요", "경사로가 있어", "장애인 화장실 있어", "장애인 주차 있어",
+    "경사로 있어요", "경사로가 있어", "장애인 화장실 있어", "장애인 화장실 있습니다",
+    "장애인 주차 있어", "장애인 주차장 있", "장애인 전용 주차", "장애인 주차 가능",
+    "장애인 주차구역", "장애인 주차 구역", "장애인 주차칸", "장애인 주차공간",
+    "장애인 주차 공간", "장애인 주차존", "장애인 주차 존",
     "자동문이에요", "넓은 통로", "통로가 넓어", "접근성 좋아요", "무장애",
     "휠체어 친화적", "배리어프리",
 ]
@@ -107,17 +110,45 @@ def _naver_get(endpoint: str, query: str, display: int = 5) -> list[dict]:
 # ── 수집 함수 ─────────────────────────────────────────────────────────────────
 
 def search_blogs(facility_name: str, location_hint: str = "",
-                 max_per_query: int = 5) -> list[dict]:
+                 max_per_query: int = 5, category: str = "") -> list[dict]:
     """접근성 관점별 다중 쿼리로 네이버 블로그 수집"""
-    base = f"{location_hint} {facility_name}".strip()
+    # 도로명까지 포함하면 쿼리가 너무 길어지므로 시/구 2단어만 사용
+    short_hint = " ".join(location_hint.split()[:2]) if location_hint else ""
+    base = f"{short_hint} {facility_name}".strip()
+    # 주차·화장실·편의시설은 시설명만 사용해야 Naver에서 실제 매칭됨
     queries = [
         f"{base} 휠체어",
         f"{base} 장애인 이용",
+        f"{facility_name} 장애인 주차장",
+        f"{facility_name} 장애인 화장실",
+        f"{facility_name} 장애인 편의시설",
         f"{base} 유모차",
-        f"{base} 문턱 계단 경사로",
-        f"{base} 테이블 높이",
+        f"{base} 문턱 경사로",
         f"{base} 접근성 후기",
     ]
+
+    # 카테고리별 특화 쿼리 추가
+    if category == "숙박":
+        queries += [
+            f"{facility_name} 배리어프리",
+            f"{facility_name} 장애인 객실",
+            f"{facility_name} 엘리베이터",
+            f"{facility_name} 접근성",
+            f"{facility_name} 무장애",
+            f"{facility_name} 장애인 편의",
+        ]
+    elif category == "음식점":
+        queries += [
+            f"{facility_name} 휠체어 입장",
+            f"{facility_name} 단차",
+            f"{facility_name} 문턱",
+        ]
+    elif category == "문화시설":
+        queries += [
+            f"{facility_name} 장애인 관람",
+            f"{facility_name} 배리어프리",
+            f"{facility_name} 엘리베이터",
+        ]
 
     results, seen = [], set()
     for q in queries:
@@ -139,13 +170,21 @@ def search_blogs(facility_name: str, location_hint: str = "",
 
 
 def search_kin(facility_name: str, location_hint: str = "",
-               max_results: int = 5) -> list[dict]:
+               max_results: int = 5, category: str = "") -> list[dict]:
     """네이버 지식iN에서 접근성 Q&A 수집"""
-    base = f"{location_hint} {facility_name}".strip()
+    short_hint = " ".join(location_hint.split()[:2]) if location_hint else ""
+    base = f"{short_hint} {facility_name}".strip()
     queries = [
         f"{base} 휠체어 이용 가능한가요",
+        f"{base} 장애인 주차 가능한가요",
         f"{base} 장애인 접근 가능",
     ]
+    if category == "숙박":
+        queries += [
+            f"{facility_name} 장애인 이용 가능한가요",
+            f"{facility_name} 배리어프리 객실 있나요",
+            f"{facility_name} 엘리베이터 있나요",
+        ]
 
     results, seen = [], set()
     for q in queries:
@@ -171,7 +210,8 @@ def detect_warnings(texts: list[dict]) -> list[dict]:
     """규칙 기반 경고·주의 키워드 탐지 (hard + soft)"""
     found = []
     for item in texts:
-        full = (item.get("title", "") + " " + item.get("snippet", ""))
+        full = (item.get("title", "") + " "
+                + (item.get("full_content", "") or item.get("snippet", "")))
 
         for category, keywords in HARD_WARNINGS.items():
             for kw in keywords:
@@ -209,7 +249,8 @@ def detect_positives(texts: list[dict]) -> list[str]:
     """긍정 접근성 신호 탐지"""
     found = set()
     for item in texts:
-        full = item.get("title", "") + " " + item.get("snippet", "")
+        full = (item.get("title", "") + " "
+                + (item.get("full_content", "") or item.get("snippet", "")))
         for kw in POSITIVE_SIGNALS:
             if kw in full:
                 found.add(kw)
@@ -219,7 +260,9 @@ def detect_positives(texts: list[dict]) -> list[str]:
 # ── GPT 추론 ──────────────────────────────────────────────────────────────────
 
 def infer_with_gpt(facility_name: str, texts: list[dict],
-                   official_info: dict = None) -> dict:
+                   official_info: dict = None,
+                   rag_chunks: list[dict] = None,
+                   category: str = "") -> dict:
     """GPT-4o로 수집 텍스트에서 접근성 수치 및 신호 추론.
     리뷰가 없어도 시설명·공식정보 기반 지식 추론을 수행한다."""
     official_str = json.dumps(official_info or {}, ensure_ascii=False)
@@ -227,7 +270,8 @@ def infer_with_gpt(facility_name: str, texts: list[dict],
     if texts:
         block = "\n\n".join(
             f"[{t.get('date','날짜미상')} / {t.get('source','')}]\n"
-            f"제목: {t.get('title','')}\n내용: {t.get('snippet','')}"
+            f"제목: {t.get('title','')}\n"
+            f"내용: {t.get('full_content','') or t.get('snippet','')}"
             for t in texts[:25]
         )
         data_section = f"""아래는 네이버 블로그·지식iN에서 수집한 실제 방문자 텍스트입니다:
@@ -244,34 +288,42 @@ def infer_with_gpt(facility_name: str, texts: list[dict],
 추론에 직접 리뷰가 없을 경우 inference_note에 "지식 기반 추론"이라고 명시하세요.
 evidence는 ["리뷰 없음 — 지식 기반 추론"]으로 기재하세요."""
 
+    # ── RAG 사전 수집 청크 섹션 ──────────────────────────────────────────────
+    rag_section = ""
+    if rag_chunks:
+        rag_block = "\n\n".join(
+            f"[{c.get('title', c.get('name', ''))}]\n{c.get('content', c.get('text', ''))}"
+            for c in rag_chunks
+        )
+        rag_section = f"""
+
+[사전 수집된 접근성 정보 (RAG — Vector DB)]
+───────────────────────────────────────
+{rag_block}
+───────────────────────────────────────
+위 RAG 정보는 사전에 수집·정제된 신뢰도 높은 데이터입니다. 실시간 리뷰와 상충할 경우 양쪽 근거를 모두 반영하세요."""
+
+    category_context = _CATEGORY_CONTEXT.get(category, "")
+
     prompt = f"""당신은 교통약자 시설 접근성 분석 전문가입니다.
 리뷰 데이터 유무와 관계없이 반드시 각 항목을 추론하여 구체적인 결과를 반환해야 합니다.
 "알 수 없음" 또는 null을 남용하지 말고, 합리적 추론이 가능하면 수치와 근거를 제시하세요.
-
+특히 accessible_parking·accessible_restroom·elevator는 리뷰 언급이 없어도
+아래 기준으로 반드시 추론하세요:
+- 한국 「장애인·노인·임산부 등의 편의증진 보장에 관한 법률」 상 공공 관광지·해수욕장·문화시설은
+  장애인 전용 주차구역, 장애인 화장실, 경사로 설치가 의무화되어 있습니다.
+- 공식 등록 편의시설 정보에 '주차 안내'가 존재하면 장애인 주차구역도 함께 운영됩니다.
+- 대규모 공공 해수욕장/관광지(수용인원 수천 명 이상)는 특별한 반증이 없는 한 available: true로 추론하세요.
+{category_context}
 시설명: {facility_name}
 공식 등록 편의시설 정보: {official_str}
 
-{data_section}
+{data_section}{rag_section}
 
 {{
   "overall_risk": "🔴 위험 | 🟡 주의 | 🟢 양호",
   "confidence": "high | medium | low",
   "metrics": {{
-    "table_height": {{
-      "estimated_cm": null,
-      "table_type": "입식 | 좌식 | 스탠딩 | 혼합 | 미확인",
-      "meets_wheelchair_standard": null,
-      "status": "🔴 | 🟡 | 🟢 | ❓",
-      "evidence": ["리뷰 원문 인용"],
-      "inference_note": "추론 과정 설명"
-    }},
-    "aisle_width": {{
-      "estimated_cm": null,
-      "meets_standard": null,
-      "status": "🔴 | 🟡 | 🟢 | ❓",
-      "evidence": ["리뷰 원문 인용"],
-      "inference_note": ""
-    }},
     "entrance_step": {{
       "has_step": null,
       "estimated_height_cm": null,
@@ -313,7 +365,7 @@ evidence는 ["리뷰 없음 — 지식 기반 추론"]으로 기재하세요."""
 
     try:
         resp = _client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2200,
             temperature=0.1,
@@ -367,7 +419,7 @@ def analyze_images(image_urls: list[str], facility_name: str) -> dict:
 
     try:
         resp = _client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": content}],
             max_tokens=1200,
             temperature=0.1,
@@ -457,6 +509,158 @@ def fetch_og_image(url: str) -> str:
         return ""
 
 
+def fetch_blog_content(url: str, max_chars: int = 3000, timeout: int = 6) -> str:
+    """블로그/뉴스 URL에서 본문 텍스트 추출 (최대 max_chars자). 실패 시 빈 문자열."""
+    if not url:
+        return ""
+    try:
+        resp = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            allow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return ""
+        html = resp.text
+        # script / style 블록 제거
+        html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.DOTALL | re.IGNORECASE)
+        # HTML 태그 제거
+        text = re.sub(r"<[^>]+>", " ", html)
+        # 연속 공백·개행 정리
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        # 짧은 줄(메뉴/버튼 텍스트) 제거
+        lines = [l.strip() for l in text.splitlines() if len(l.strip()) > 20]
+        cleaned = "\n".join(lines)
+        return cleaned[:max_chars]
+    except Exception:
+        return ""
+
+
+# ── 숙박 전용: 공식 홈페이지 수집 ────────────────────────────────────────────
+
+def fetch_hotel_official_content(facility_name: str) -> list[dict]:
+    """
+    호텔 공식 홈페이지·예약 사이트에서 접근성·시설 안내 페이지 본문 수집.
+    블로그 API 상위 결과(공홈·예약 사이트 포함) URL을 직접 fetch해 반환.
+    """
+    queries = [
+        f"{facility_name} 장애인 편의시설",
+        f"{facility_name} 배리어프리 시설안내",
+        f"{facility_name} 접근성 안내",
+    ]
+    results: list[dict] = []
+    seen: set = set()
+    for q in queries:
+        for item in _naver_get("blog", q, 5):
+            link = item.get("link", "")
+            if not link or link in seen:
+                continue
+            seen.add(link)
+            content = fetch_blog_content(link, max_chars=3000, timeout=5)
+            if content and len(content) > 100:
+                results.append({
+                    "source": "hotel_web",
+                    "title":  _strip_html(item.get("title", "")),
+                    "snippet": _strip_html(item.get("description", "")),
+                    "full_content": content,
+                    "link":  link,
+                    "date":  item.get("postdate", ""),
+                })
+        if len(results) >= 3:
+            break
+    return results
+
+
+def get_hotel_directions(facility_name: str, address: str = "") -> dict:
+    """
+    호텔 공식 홈페이지·블로그에서 오시는 길 정보를 수집 후 GPT로 구조화.
+    Returns:
+        {"subway": "...", "bus": "...", "car": "...", "parking": "...",
+         "summary": "...", "source_url": "..."}
+    """
+    queries = [
+        f"{facility_name} 오시는 길",
+        f"{facility_name} 찾아오시는 길",
+        f"{facility_name} 교통편 안내",
+    ]
+    texts: list[str] = []
+    source_url = ""
+    seen: set = set()
+    for q in queries:
+        for item in _naver_get("blog", q, 4):
+            link = item.get("link", "")
+            if not link or link in seen:
+                continue
+            seen.add(link)
+            content = fetch_blog_content(link, max_chars=3000, timeout=5)
+            if content and len(content) > 80:
+                texts.append(content)
+                if not source_url:
+                    source_url = link
+        if len(texts) >= 2:
+            break
+
+    if not texts:
+        return {}
+
+    combined = "\n\n---\n\n".join(texts[:3])
+    prompt = f"""'{facility_name}' ({address}) 관련 교통·오시는 길 텍스트입니다.
+아래 JSON으로 교통편 정보를 추출하세요. 없는 항목은 빈 문자열("")로 두세요.
+
+{{
+  "subway": "가장 가까운 지하철역 및 출구·도보 소요시간",
+  "bus":    "버스 정류장명 및 버스 번호",
+  "car":    "자동차 이용 시 주요 경로 요약",
+  "parking": "주차장 안내 (장애인 주차 포함)",
+  "summary": "1~2줄 요약"
+}}
+
+텍스트:
+{combined[:3000]}"""
+
+    try:
+        resp = _client.chat.completions.create(
+            model="gpt-4.1",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=600,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        result = json.loads(resp.choices[0].message.content.strip())
+        result["source_url"] = source_url
+        return result
+    except Exception:
+        return {}
+
+
+# ── 카테고리별 GPT 추론 컨텍스트 ────────────────────────────────────────────
+
+_CATEGORY_CONTEXT: dict[str, str] = {
+    "숙박": """
+[숙박시설 접근성 법적 의무 기준]
+- 「장애인·노인·임산부 등의 편의증진 보장에 관한 법률」에 따라
+  객실 30실 이상 숙박시설은 장애인 전용 객실·화장실·주차구역 설치가 의무입니다.
+- 2층 이상 숙박시설(객실 10실 이상)은 엘리베이터 설치가 의무화되어 있습니다.
+- '그래비티', '조선', '신라', '롯데', '하얏트', '힐튼', '메리어트', '노보텔',
+  '인터컨티넨탈', 'JW', '파크하얏트', '페어몬트', '포시즌스' 등 브랜드 체인호텔은
+  반드시 엘리베이터·장애인 화장실·장애인 주차가 있습니다.
+- 리뷰 언급이 없어도 대형 호텔·비즈니스호텔은 elevator·accessible_restroom·accessible_parking 모두 available: true로 추론하세요.
+""",
+    "문화시설": """
+[문화시설 접근성 법적 의무 기준]
+- 공공 박물관·미술관·도서관·공연장은 장애인 화장실·엘리베이터·주차구역 설치가 의무입니다.
+- 300석 이상 공공 문화시설은 반증 없는 한 elevator·accessible_restroom·accessible_parking 모두 available: true로 추론하세요.
+""",
+    "음식점": """
+[음식점 접근성 참고]
+- 영업면적 300㎡ 이상 음식점은 장애인 화장실 설치가 의무입니다.
+- 건물 1층에 위치한 음식점은 엘리베이터가 해당없을 수 있습니다.
+""",
+}
+
+
 # ── 메인 검증 함수 ────────────────────────────────────────────────────────────
 
 def validate_accessibility(
@@ -464,6 +668,7 @@ def validate_accessibility(
     address: str = "",
     official_info: dict = None,
     image_urls: list = None,
+    category: str = "",
 ) -> dict:
     """
     네이버 수집 → 키워드 탐지 → GPT 추론 → Vision 분석 → 검증 결과 반환
@@ -471,18 +676,55 @@ def validate_accessibility(
     location_hint = " ".join(address.split()[:3]) if address else ""
 
     # 1) 네이버 데이터 수집 (키 없으면 빈 리스트 — GPT 지식 추론으로 대체)
-    blog_texts = search_blogs(facility_name, location_hint)
-    kin_texts  = search_kin(facility_name, location_hint)
-    all_texts  = blog_texts + kin_texts
+    blog_texts = search_blogs(facility_name, location_hint, category=category)
+    kin_texts  = search_kin(facility_name, location_hint, category=category)
+
+    # 숙박 카테고리: 공식 홈페이지 추가 수집
+    hotel_web_texts: list[dict] = []
+    if category == "숙박":
+        hotel_web_texts = fetch_hotel_official_content(facility_name)
+
+    all_texts = blog_texts + kin_texts + hotel_web_texts
     naver_available = bool(NAVER_CLIENT_ID and NAVER_CLIENT_SECRET
                            and NAVER_CLIENT_ID != "your_naver_client_id_here")
+
+    # 1-a) 블로그 본문 전체 fetch (아직 full_content 없는 상위 3건만)
+    for item in blog_texts[:3]:
+        if item.get("full_content"):
+            continue
+        link = item.get("link", "")
+        if link:
+            full = fetch_blog_content(link, max_chars=2000, timeout=3)
+            if full:
+                item["full_content"] = full
+
+    # 1-b) Vector DB 사전 수집 청크 조회
+    rag_chunks: list[dict] = []
+    try:
+        import vector_store as _vs
+        rag_chunks = _vs.search_tour_overviews(
+            f"{facility_name} 접근성 휠체어", top_k=3
+        )
+        if hasattr(_vs, "search_accessibility_chunks"):
+            rag_chunks += _vs.search_accessibility_chunks(
+                f"{facility_name} 접근성", top_k=3
+            )
+    except Exception:
+        pass
+
+    # 1-c) 숙박: 오시는 길 정보 비동기 수집 (접근성 분석과 병렬 실행 불가하므로 순차)
+    hotel_directions: dict = {}
+    if category == "숙박":
+        hotel_directions = get_hotel_directions(facility_name, address)
 
     # 2) 규칙 기반 경고 탐지
     warnings  = detect_warnings(all_texts)
     positives = detect_positives(all_texts)
 
-    # 3) GPT 접근성 수치 추론
-    gpt_result = infer_with_gpt(facility_name, all_texts, official_info)
+    # 3) GPT 접근성 수치 추론 (본문 + RAG 청크 전달)
+    gpt_result = infer_with_gpt(facility_name, all_texts, official_info,
+                                rag_chunks=rag_chunks or None,
+                                category=category)
 
     # 4) Vision 분석
     vision_result = analyze_images(image_urls or [], facility_name) if image_urls else {}
@@ -496,11 +738,15 @@ def validate_accessibility(
         "address": address,
         "overall_risk": overall_risk,
         "data_collected": {
-            "blog_posts":      len(blog_texts),
-            "kin_posts":       len(kin_texts),
-            "total":           len(all_texts),
-            "naver_available": naver_available,
+            "blog_posts":        len(blog_texts),
+            "blog_full_content": sum(1 for t in blog_texts if t.get("full_content")),
+            "kin_posts":         len(kin_texts),
+            "total":             len(all_texts),
+            "naver_available":   naver_available,
+            "rag_chunks_used":   len(rag_chunks),
         },
+        "official_info":     official_info or {},
+        "hotel_directions":  hotel_directions,
         "warnings":          warnings,
         "positive_signals":  positives,
         "gpt_inference":     gpt_result,

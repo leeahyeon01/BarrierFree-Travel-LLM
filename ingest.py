@@ -63,12 +63,47 @@ def ingest_transport_info() -> int:
     return total
 
 
+def ingest_tour_overviews(doc_id_start: int = 30000) -> int:
+    """모든 지역 × 카테고리 장소의 상세 개요를 GPT 청킹 후 Vector DB에 저장."""
+    doc_id = doc_id_start
+    total_chunks = 0
+
+    for area_name in tour_api.AREA_MAP:
+        for category in tour_api.CONTENT_TYPE_MAP:
+            places = tour_api.search_places(area_name, category, num_of_rows=20)
+            if not places or "error" in places[0] or "message" in places[0]:
+                continue
+
+            for place in places:
+                content_id = place.get("content_id", "")
+                name = place.get("이름", "")
+                if not content_id or not name:
+                    continue
+
+                print(f"  개요 청킹: {area_name} / {name}", end=" ", flush=True)
+                try:
+                    detail = tour_api.get_detail(content_id)
+                    overview = detail.get("개요", "")
+                    n = vector_store.store_tour_overview_chunks(
+                        doc_id, content_id, name, area_name, category, overview
+                    )
+                    doc_id += n
+                    total_chunks += n
+                    print(f"→ {n}청크 저장")
+                except Exception as e:
+                    print(f"→ 오류: {e}")
+
+                time.sleep(0.5)  # API rate limit + GPT rate limit 대응
+
+    return total_chunks
+
+
 def main():
     print("=" * 50)
     print("  Vector DB 데이터 적재 시작")
     print("=" * 50)
 
-    print("\n[1/3] 관광지 데이터 수집 중...")
+    print("\n[1/4] 관광지 기본 데이터 수집 중...")
     try:
         tour_count = ingest_tour_places()
         print(f"  완료: 총 {tour_count}건 저장\n")
@@ -76,14 +111,14 @@ def main():
         print(f"  오류: {e}\n")
         tour_count = 0
 
-    print("[2/3] 최신 무장애 축제 데이터 수집 중 (네이버)...")
+    print("[2/4] 최신 무장애 축제 데이터 수집 중 (네이버)...")
     try:
         festival_count = ingest_festivals_from_naver()
         print(f"  완료: 총 {festival_count}건 저장\n")
     except Exception as e:
         print(f"  오류: {e}\n")
 
-    print("[3/3] 교통 지원 정보 저장 중...")
+    print("[3/4] 교통 지원 정보 저장 중...")
     try:
         transport_count = ingest_transport_info()
         print(f"  완료: 총 {transport_count}건 저장\n")
@@ -91,11 +126,20 @@ def main():
         print(f"  오류: {e}\n")
         transport_count = 0
 
+    print("[4/4] 장소 개요 GPT 청킹 저장 중... (시간이 걸릴 수 있습니다)")
+    try:
+        overview_chunks = ingest_tour_overviews()
+        print(f"  완료: 총 {overview_chunks}개 청크 저장\n")
+    except Exception as e:
+        print(f"  오류: {e}\n")
+        overview_chunks = 0
+
     print("=" * 50)
     counts = vector_store.collection_counts()
-    print(f"  tour_places     : {counts.get('tour_places', 0)}건")
-    print(f"  festival_news   : {counts.get('festival_news', 0)}건")
-    print(f"  transport_info  : {counts.get('transport_info', 0)}건")
+    print(f"  tour_places          : {counts.get('tour_places', 0)}건")
+    print(f"  festival_news        : {counts.get('festival_news', 0)}건")
+    print(f"  transport_info       : {counts.get('transport_info', 0)}건")
+    print(f"  tour_overview_chunks : {counts.get('tour_overview_chunks', 0)}건")
     print("  Vector DB 적재 완료!")
     print("=" * 50)
 

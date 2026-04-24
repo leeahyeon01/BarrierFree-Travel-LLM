@@ -219,6 +219,138 @@ def search_random_places(category: str, count: int = 6) -> list[dict]:
     return results[:count]
 
 
+# ── 카테고리별 detailIntro2 필드명 → 한글 레이블 매핑 ──────────────────────────
+_INTRO_FIELD_LABELS: dict[str, dict[str, str]] = {
+    "12": {  # 관광지
+        "chkbabycarriagetravel": "유모차 대여",
+        "chkpettravel":          "반려동물 동반",
+        "infocentertravel":      "안내센터",
+        "opentime":              "개장시간",
+        "parking":               "주차 안내",
+        "restdatetravel":        "쉬는 날",
+        "usetime":               "이용시간",
+        "useseason":             "이용 가능 시기",
+        "expagerangefrom":       "체험 연령(시작)",
+        "expagerangeto":         "체험 연령(종료)",
+    },
+    "14": {  # 문화시설
+        "chkbabycarriageculture": "유모차 대여",
+        "discountinfomation":     "할인 정보",
+        "infocenterculture":      "안내센터",
+        "parkingculture":         "주차",
+        "parkingfee":             "주차요금",
+        "restdateculture":        "쉬는 날",
+        "spendtime":              "관람 소요시간",
+        "usefee":                 "이용요금",
+        "usetimeculture":         "이용시간",
+    },
+    "15": {  # 축제
+        "agelimit":              "연령 제한",
+        "bookingplace":          "예약처",
+        "discountinfofestival":  "할인 정보",
+        "eventplace":            "행사 장소",
+        "placeinfo":             "장소 정보",
+        "playtime":              "공연시간",
+        "program":               "행사 프로그램",
+        "sponsor1":              "주최자",
+        "usetimefestival":       "이용요금",
+    },
+    "32": {  # 숙박
+        "accomcountlodging":    "수용인원",
+        "benikia":              "베니키아 여부",
+        "chkcooking":           "취사 여부",
+        "goodstay":             "굿스테이 여부",
+        "hanok":                "한옥 여부",
+        "infocenterlodging":    "안내센터",
+        "parkinglodging":       "주차",
+        "pickup":               "픽업 서비스",
+        "reservationlodging":   "예약 안내",
+        "roomcount":            "객실수",
+        "subfacility":          "부대시설",
+    },
+    "39": {  # 음식점
+        "chkcreditcardfood":    "신용카드",
+        "firstmenu":            "대표 메뉴",
+        "infocenterfood":       "안내센터",
+        "kidsfacility":         "어린이놀이방",
+        "opentimefood":         "영업시간",
+        "packing":              "포장 가능",
+        "parkingfood":          "주차",
+        "reservationfood":      "예약 안내",
+        "restdatefood":         "쉬는날",
+        "scalefood":            "규모",
+        "seat":                 "좌석수",
+        "smoking":              "흡연",
+        "treatmenu":            "취급 메뉴",
+    },
+}
+
+# detailInfo2 infoname 중 접근성 관련 키워드 (이 단어가 들어간 항목만 포함)
+_ACCESSIBILITY_KEYWORDS = (
+    "휠체어", "장애", "엘리베이터", "승강기", "리프트", "경사로", "단차",
+    "주차", "화장실", "점자", "안내견", "보조", "유모차", "배리어", "무장애",
+    "접근", "수어", "수화", "시각", "청각", "이동", "편의",
+)
+
+
+def get_accessibility_info(content_id: str, content_type_id: str) -> dict:
+    """
+    KorWithService2 detailIntro2 + detailInfo2 조합으로 공식 접근성 정보 반환.
+
+    Returns:
+        {한글레이블: 값, ...} — GPT official_info로 직접 사용 가능
+    """
+    result: dict = {}
+
+    # ── detailIntro2: 카테고리별 소개 필드 ──────────────────────────────────
+    intro_data = _get("detailIntro2", {
+        "contentId":     content_id,
+        "contentTypeId": content_type_id,
+    })
+    intro_item = (
+        (intro_data.get("response", {})
+                   .get("body", {})
+                   .get("items", {}) or {})
+        .get("item", [])
+    )
+    if isinstance(intro_item, list) and intro_item:
+        intro_item = intro_item[0]
+    if isinstance(intro_item, dict):
+        field_map = _INTRO_FIELD_LABELS.get(str(content_type_id), {})
+        for field, label in field_map.items():
+            val = str(intro_item.get(field, "")).strip()
+            if val and val.lower() not in ("", "null", "n", "0", "none"):
+                result[label] = val
+
+    # ── detailInfo2: 반복 편의시설 항목 → 접근성 관련만 필터링 ────────────────
+    info_data = _get("detailInfo2", {
+        "contentId":     content_id,
+        "contentTypeId": content_type_id,
+    })
+    info_items = (
+        (info_data.get("response", {})
+                  .get("body", {})
+                  .get("items", {}) or {})
+        .get("item", [])
+    )
+    if isinstance(info_items, dict):
+        info_items = [info_items]
+    if isinstance(info_items, list):
+        acc_items = []
+        for item in info_items:
+            name = str(item.get("infoname", "")).strip()
+            text = str(item.get("infotext", "")).strip()
+            if not name or not text:
+                continue
+            combined = name + text
+            if any(kw in combined for kw in _ACCESSIBILITY_KEYWORDS):
+                acc_items.append(f"{name}: {text}")
+        if acc_items:
+            result["장애인 편의시설"] = " | ".join(acc_items)
+
+    return result
+
+
 def get_detail(content_id: str) -> dict:
     """
     장소 상세 정보 조회 (detailCommon2)

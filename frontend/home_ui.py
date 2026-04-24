@@ -255,8 +255,17 @@ def cached_detail(content_id: str) -> dict:
     return tour_api.get_detail(content_id)
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def cached_accessibility(name: str, address: str, image_urls: tuple = ()) -> dict:
-    return naver_validator.validate_accessibility(name, address, image_urls=list(image_urls))
+def cached_accessibility(name: str, address: str, image_urls: tuple = (),
+                         content_id: str = "", category: str = "") -> dict:
+    official_info = {}
+    if content_id and category:
+        content_type_id = tour_api.CONTENT_TYPE_MAP.get(category, "")
+        if content_type_id:
+            official_info = tour_api.get_accessibility_info(content_id, content_type_id)
+    return naver_validator.validate_accessibility(
+        name, address, official_info=official_info or None,
+        image_urls=list(image_urls), category=category,
+    )
 
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_naver_festivals() -> list[dict]:
@@ -521,9 +530,10 @@ def _render_festival_cards(festivals: list[dict]):
 
 
 # ── 공통: 카드 그리드 렌더 ────────────────────────────────────────────────────
-def _render_card_grid(places: list[dict], key_prefix: str, cols: int = 2):
+def _render_card_grid(places: list[dict], key_prefix: str, cols: int = 2, compact: bool = False):
     """places 목록을 cols열 카드 그리드로 렌더링. 자세히보기 클릭 시 detail 뷰."""
     rows = [places[i:i+cols] for i in range(0, len(places), cols)]
+    img_style = ' style="aspect-ratio:16/9;max-height:140px;width:100%;object-fit:cover;display:block;"' if compact else ""
     for row in rows:
         c = st.columns(cols, gap="small")
         for j, place in enumerate(row):
@@ -540,7 +550,7 @@ def _render_card_grid(places: list[dict], key_prefix: str, cols: int = 2):
                 if img:
                     st.markdown(f"""
                     <div class="{card_cls}">
-                        <img src="{img}" alt="{name}"/>
+                        <img src="{img}" alt="{name}"{img_style}/>
                         <div class="{body_cls}">
                             <p class="{name_cls}">{name}</p>
                             <p class="{sub_cls}">📍 {addr_short}</p>
@@ -606,11 +616,44 @@ def render_detail():
 
     st.markdown('<hr class="divider"/>', unsafe_allow_html=True)
     st.markdown("#### ♿ 실시간 접근성 검증")
-    st.caption("네이버 블로그·지식iN 리뷰 + GPT-4o 추론 기반 자동 분석")
+    st.caption("네이버 블로그·지식iN 리뷰 + GPT-4.1 추론 기반 자동 분석")
 
     if st.session_state.accessibility is None:
-        with st.spinner("네이버 리뷰 분석 중..."):
-            st.session_state.accessibility = cached_accessibility(name, addr, tuple(images))
+        content_id = place.get("content_id", "")
+        category   = place.get("카테고리", "")
+
+        extra_step = "<div style='background:white;border:1px solid #bee3f8;border-radius:20px;padding:4px 12px;font-size:11px;color:#2b6cb0;font-weight:600;display:inline-block'>🏨 공식홈페이지 확인</div>" if category == "숙박" else ""
+        step_style = "background:white;border:1px solid #bee3f8;border-radius:20px;padding:4px 12px;font-size:11px;color:#2b6cb0;font-weight:600;display:inline-block"
+        loading_html = (
+            "<style>"
+            "@keyframes acc-spin{0%{transform:rotate(0deg) scale(1)}25%{transform:rotate(15deg) scale(1.1)}50%{transform:rotate(0deg) scale(1)}75%{transform:rotate(-15deg) scale(1.1)}100%{transform:rotate(0deg) scale(1)}}"
+            "@keyframes acc-pulse{0%,100%{opacity:1}50%{opacity:0.45}}"
+            "@keyframes acc-bar{0%{width:0%}40%{width:55%}80%{width:85%}100%{width:95%}}"
+            "</style>"
+            "<div style='background:linear-gradient(135deg,#f0f7ff 0%,#e8f5e9 100%);border-radius:18px;padding:28px 24px 22px;text-align:center;border:1.5px solid #c8e6fa;margin:8px 0 12px'>"
+            "<div style='font-size:52px;display:inline-block;animation:acc-spin 1.6s ease-in-out infinite;margin-bottom:12px;line-height:1'>♿</div>"
+            "<p style='font-size:17px;font-weight:700;color:#1a73e8;margin:0 0 6px'>접근성 검증 중입니다…</p>"
+            "<p style='font-size:13px;color:#555;margin:0 0 16px;animation:acc-pulse 2s ease-in-out infinite'>리뷰를 수집하고 AI가 분석하는 중이에요</p>"
+            "<div style='display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:16px'>"
+            f"<div style='{step_style}'>📡 네이버 블로그 수집</div>"
+            f"<div style='{step_style}'>💬 지식iN 검색</div>"
+            f"{extra_step}"
+            f"<div style='{step_style}'>🤖 GPT 추론</div>"
+            f"<div style='{step_style}'>📸 이미지 분석</div>"
+            "</div>"
+            "<div style='background:#dbeafe;border-radius:999px;height:6px;overflow:hidden;max-width:280px;margin:0 auto 12px'>"
+            "<div style='height:100%;background:linear-gradient(90deg,#4A90E2,#38a169);border-radius:999px;animation:acc-bar 18s ease-out forwards'></div>"
+            "</div>"
+            "<p style='font-size:11px;color:#888'>보통 15~30초 소요됩니다 · 잠시만 기다려 주세요 🙏</p>"
+            "</div>"
+        )
+        loading_slot = st.empty()
+        loading_slot.markdown(loading_html, unsafe_allow_html=True)
+
+        st.session_state.accessibility = cached_accessibility(
+            name, addr, tuple(images), content_id=content_id, category=category
+        )
+        loading_slot.empty()
         st.rerun()
 
     acc       = st.session_state.accessibility
@@ -618,6 +661,8 @@ def render_detail():
     data_info = acc.get("data_collected", {})
     gpt       = acc.get("gpt_inference", {})
     metrics   = gpt.get("metrics", {})
+    official_info    = acc.get("official_info", {})
+    hotel_directions = acc.get("hotel_directions", {})
     confidence    = gpt.get("confidence", "")
     gpt_summary   = gpt.get("summary", "")
     conflicts     = gpt.get("conflicts_with_official", [])
@@ -625,6 +670,41 @@ def render_detail():
     warnings      = acc.get("warnings", [])
     top_sources   = acc.get("top_sources", [])
     vision        = acc.get("vision_analysis", {})
+
+    # ── overall_risk 보정: "알 수 없음"이지만 핵심 시설이 확인된 경우 ────────────
+    # confirmed_facilities: 개별 metric 렌더링에서도 동일하게 "있음"으로 표시하기 위해 추적
+    confirmed_facilities: set[str] = set()
+
+    def _facility_confirmed(key: str) -> bool:
+        m = metrics.get(key, {})
+        if m.get("available") is True:
+            return True
+        _kw_map = {
+            "accessible_parking":  ("주차 안내", "주차"),
+            "accessible_restroom": ("장애인 화장실", "화장실"),
+        }
+        _label_key, _kw = _kw_map.get(key, ("", ""))
+        if not _label_key:
+            return False
+        _combined = " ".join(official_info.values())
+        return bool(official_info.get(_label_key, "") or _kw in _combined)
+
+    if "❓" in risk or "알 수 없음" in risk:
+        confirmed_labels = []
+        if _facility_confirmed("accessible_parking"):
+            confirmed_labels.append("장애인 주차장")
+            confirmed_facilities.add("accessible_parking")
+        if _facility_confirmed("accessible_restroom"):
+            confirmed_labels.append("장애인 화장실")
+            confirmed_facilities.add("accessible_restroom")
+
+        if confirmed_labels:
+            risk = "🟢 이용 가능"
+            label_str = " · ".join(confirmed_labels)
+            if gpt_summary:
+                gpt_summary = f"{label_str} 있음 확인. {gpt_summary}"
+            else:
+                gpt_summary = f"{label_str} 있음 — 전반적으로 이용 용이"
 
     badge_css = "access-badge-green" if "🟢" in risk else ("access-badge-red" if "🔴" in risk else "access-badge-yellow")
     conf_label = {"high": "🟢 높음", "medium": "🟡 보통", "low": "🔴 낮음"}.get(confidence, "")
@@ -651,15 +731,20 @@ def render_detail():
         )
         st.markdown(f'<div style="margin:6px 0 10px">{chips}</div>', unsafe_allow_html=True)
 
-    # ── 6개 접근성 지표 ───────────────────────────────────────────────────────
+    # ── 4개 접근성 지표 ───────────────────────────────────────────────────────
     METRIC_LABELS = {
         "entrance_step":       ("🚪", "입구 단차"),
         "elevator":            ("🛗", "엘리베이터"),
         "accessible_restroom": ("🚻", "장애인 화장실"),
         "accessible_parking":  ("🅿️", "장애인 주차"),
-        "aisle_width":         ("↔️", "통로 폭"),
-        "table_height":        ("🍽️", "테이블 높이"),
     }
+
+    _OUTDOOR_KW = (
+        "해수욕장", "해변", "바닷가", "거리", "광장", "공원", "호수", "궁",
+        "능", "원", "둘레길", "산책로", "해안", "갯벌", "섬", "계곡", "폭포",
+        "해협", "하천", "강변", "숲", "고원", "산", "오름",
+    )
+    is_outdoor = any(kw in name for kw in _OUTDOOR_KW)
 
     for key, (icon, label) in METRIC_LABELS.items():
         m = metrics.get(key, {})
@@ -675,19 +760,38 @@ def render_detail():
             if m.get("has_ramp_alternative"):
                 v += ", 경사로 있음"
         elif key in ("elevator", "accessible_restroom", "accessible_parking"):
-            v = "있음" if m.get("available") else ("없음" if m.get("available") is False else "미확인")
-        elif key == "aisle_width":
-            cm = m.get("estimated_cm")
-            v = f"약 {cm}cm" if cm else "미확인"
-        elif key == "table_height":
-            cm = m.get("estimated_cm")
-            ttype = m.get("table_type", "")
-            if cm:
-                v = f"약 {cm}cm" + (f" ({ttype})" if ttype and ttype != "미확인" else "")
-            elif ttype and ttype != "미확인":
-                v = ttype
+            available = m.get("available")
+            # official 데이터로 이미 확인된 시설은 GPT 판단과 무관하게 "있음"으로 표시
+            if key in confirmed_facilities:
+                v = "있음"
+                if available is not True:
+                    status = "🟢"
+                    inference_note = "📋 KTO 공식 등록 데이터 기반"
+            elif available is True:
+                v = "있음"
+            elif available is False:
+                v = "없음"
             else:
-                v = "미확인"
+                # 야외 장소는 엘리베이터가 애초에 해당 없음
+                if key == "elevator" and is_outdoor:
+                    v = "해당없음"
+                    status = "➖"
+                else:
+                    # GPT가 판단 못한 경우 KTO 공식 데이터로 fallback
+                    _kw_map = {
+                        "accessible_parking":  ("주차 안내", "주차"),
+                        "accessible_restroom": ("장애인 화장실", "화장실"),
+                        "elevator":            ("엘리베이터", "승강기"),
+                    }
+                    _label_key, _kw = _kw_map[key]
+                    _official_val = official_info.get(_label_key, "")
+                    _combined = " ".join(official_info.values())
+                    if _official_val or _kw in _combined:
+                        v = _official_val if _official_val else "있음"
+                        status = "🟢"
+                        inference_note = "📋 KTO 공식 등록 데이터 기반"
+                    else:
+                        v = "미확인"
         else:
             v = "미확인"
 
@@ -797,6 +901,30 @@ def render_detail():
 
     st.markdown('<hr class="divider"/>', unsafe_allow_html=True)
     st.markdown("#### 🗺 가는 법 안내")
+
+    # ── 숙박: 공식 홈페이지 오시는 길 카드 ─────────────────────────────────────
+    if hotel_directions and any(hotel_directions.get(k) for k in ("subway", "bus", "car", "parking")):
+        rows = ""
+        _icons = {"subway": "🚇", "bus": "🚌", "car": "🚗", "parking": "🅿️"}
+        _labels = {"subway": "지하철", "bus": "버스", "car": "자동차", "parking": "주차"}
+        for key in ("subway", "bus", "car", "parking"):
+            val = hotel_directions.get(key, "").strip()
+            if val:
+                rows += (
+                    f'<p style="font-size:12px;color:#555;margin:3px 0">'
+                    f'{_icons[key]} <b>{_labels[key]}</b>: {val}</p>'
+                )
+        src_url = hotel_directions.get("source_url", "")
+        src_link = (f'<a href="{src_url}" target="_blank" '
+                    f'style="font-size:11px;color:#4A90E2">출처 보기 →</a>') if src_url else ""
+        st.markdown(f"""
+        <div style="background:#f0f7ff;border-radius:14px;padding:14px 16px;
+                    margin-bottom:12px;border-left:4px solid #4A90E2">
+            <p style="font-size:13px;font-weight:700;color:#4A90E2;margin:0 0 8px">
+                🏨 공식 홈페이지 오시는 길</p>
+            {rows}
+            <div style="margin-top:6px">{src_link}</div>
+        </div>""", unsafe_allow_html=True)
 
     # 장소가 바뀌면 이전 경로 결과 초기화
     place_id = place.get("content_id", name)
@@ -1100,9 +1228,9 @@ def render_home():
                 with st.spinner(f"전국 {label} 불러오는 중..."):
                     st.session_state.random_category = label
                     if label == "축제":
-                        st.session_state.random_places = cached_random_festivals(count=6)
+                        st.session_state.random_places = cached_random_festivals(count=4)
                     else:
-                        st.session_state.random_places = tour_api.search_random_places(label, count=6)
+                        st.session_state.random_places = tour_api.search_random_places(label, count=4)
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
             color  = "#4A90E2" if is_active else "#555"
@@ -1112,6 +1240,12 @@ def render_home():
                 f'margin:-2px 0 10px;color:{color};font-weight:{weight}">{label}</p>',
                 unsafe_allow_html=True,
             )
+
+    # 첫 접속 시 관광지 자동 로드
+    if not st.session_state.random_places and st.session_state.random_category is None:
+        st.session_state.random_category = "관광지"
+        with st.spinner("전국 관광지 불러오는 중..."):
+            st.session_state.random_places = tour_api.search_random_places("관광지", count=4)
 
     rnd_places = st.session_state.random_places
     if rnd_places:
@@ -1123,7 +1257,7 @@ def render_home():
         if rnd_cat == "축제":
             _render_festival_cards(rnd_places)
         else:
-            _render_card_grid(rnd_places, key_prefix="rnd", cols=2)
+            _render_card_grid(rnd_places, key_prefix="rnd", cols=2, compact=True)
 
     # ── 무장애 축제 배너 (네이버 최신 검색) ─────────────────────────────────────
     st.markdown('<hr class="divider"/>', unsafe_allow_html=True)
