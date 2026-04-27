@@ -13,6 +13,12 @@ from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 
+try:
+    from rank_bm25 import BM25Okapi
+    _BM25_AVAILABLE = True
+except ImportError:
+    _BM25_AVAILABLE = False
+
 load_dotenv()
 
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
@@ -75,6 +81,105 @@ def _ensure_collection(name: str) -> None:
             collection_name=name,
             vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
         )
+
+
+# ── Contextual Embedding ──────────────────────────────────────────────────────
+
+_CONTEXT_PROMPT = """\
+<document>
+{full_document}
+</document>
+
+다음은 위 문서에서 추출한 청크입니다:
+<chunk>
+{chunk_content}
+</chunk>
+
+이 청크를 검색 시스템에서 잘 찾을 수 있도록, 전체 문서 내에서 이 청크의 위치와 의미를 설명하는 \
+간결한 컨텍스트를 2~3문장(한국어)으로 작성하세요.
+컨텍스트만 출력하고 다른 내용은 포함하지 마세요."""
+
+
+def _generate_chunk_context(full_document: str, chunk_content: str) -> str:
+    """GPT로 청크의 문서 내 위치·의미 컨텍스트 생성 (Contextual Embedding 핵심)."""
+    if not full_document or not chunk_content:
+        return ""
+    prompt = _CONTEXT_PROMPT.format(
+        full_document=full_document[:4000],
+        chunk_content=chunk_content[:800],
+    )
+    try:
+        resp = _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=200,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        return ""
+
+
+# ── Contextual BM25 ───────────────────────────────────────────────────────────
+
+_bm25_cache: dict[str, dict] = {}
+
+
+def _tokenize(text: str) -> list[str]:
+    """한국어 BM25용 토크나이저 (공백·특수문자 분리, 2자 이상만)."""
+    text = re.sub(r"[^\w가-힣a-zA-Z0-9]", " ", text)
+    return [t for t in text.split() if len(t) > 1]
+
+
+def _build_bm25_index(collection_name: str) -> None:
+    """Qdrant 페이로드의 contextualized_text로 BM25 인덱스 빌드 후 메모리 캐시."""
+    if not _BM25_AVAILABLE:
+        return
+    client = get_client()
+    ids, payloads, corpus = [], [], []
+    offset = None
+    while True:
+        try:
+            points, next_offset = client.scroll(
+                collection_name=collection_name,
+                limit=1000,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception:
+            break
+        for p in points:
+            ids.append(p.id)
+            payloads.append(p.payload)
+            # contextualized_text 우선, 없으면 text 폴백
+            text = p.payload.get("contextualized_text") or p.payload.get("text", "")
+            corpus.append(_tokenize(text))
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    if corpus:
+        _bm25_cache[collection_name] = {
+            "index":    BM25Okapi(corpus),
+            "ids":      ids,
+            "payloads": payloads,
+        }
+
+
+def _get_bm25_index(collection_name: str) -> dict | None:
+    """BM25 인덱스 반환 — 없으면 lazy build."""
+    if collection_name not in _bm25_cache:
+        _build_bm25_index(collection_name)
+    return _bm25_cache.get(collection_name)
+
+
+def invalidate_bm25_cache(collection_name: str | None = None) -> None:
+    """ingest 후 BM25 캐시 무효화 (다음 검색 시 재빌드)."""
+    if collection_name:
+        _bm25_cache.pop(collection_name, None)
+    else:
+        _bm25_cache.clear()
 
 
 # ── GPT 청킹 ─────────────────────────────────────────────────────────────────
@@ -194,15 +299,27 @@ def store_festival_news(doc_id: int, item: dict) -> None:
 
 def store_tour_overview_chunks(doc_id_start: int, content_id: str, name: str,
                                area: str, category: str, overview: str) -> int:
-    """장소 개요를 GPT 청킹 후 각 청크를 별도 벡터로 저장. 저장된 청크 수 반환."""
+    """
+    장소 개요를 GPT 청킹 → Contextual Embedding → Vector DB 저장.
+    각 청크에 문서 내 위치 컨텍스트를 부여한 뒤 임베딩 (Contextual Retrieval).
+    저장된 청크 수 반환.
+    """
     _ensure_collection(COLLECTION_OVERVIEW)
     chunks = chunk_overview_with_gpt(name, overview)
     for i, chunk in enumerate(chunks):
-        title   = chunk.get("title", f"{name} - {i+1}")
-        content = chunk.get("content", "")
+        title    = chunk.get("title", f"{name} - {i+1}")
+        content  = chunk.get("content", "")
         keywords = chunk.get("keywords", [])
-        embed_text = f"{title}\n{content}"
-        vector = _embed(embed_text)
+
+        # ── Contextual Embedding: 전체 문서 내 위치 컨텍스트 생성 ─────────────
+        context = _generate_chunk_context(overview, content)
+        # 컨텍스트를 청크 앞에 붙여 임베딩 — 검색 정확도 향상
+        contextualized_text = (
+            f"{context}\n\n{title}\n{content}" if context else f"{title}\n{content}"
+        )
+
+        vector = _embed(contextualized_text)
+
         get_client().upsert(
             collection_name=COLLECTION_OVERVIEW,
             points=[
@@ -210,18 +327,23 @@ def store_tour_overview_chunks(doc_id_start: int, content_id: str, name: str,
                     id=doc_id_start + i,
                     vector=vector,
                     payload={
-                        "content_id": content_id,
-                        "name":       name,
-                        "area":       area,
-                        "category":  category,
-                        "title":     title,
-                        "content":   content,
-                        "keywords":  keywords,
-                        "text":      embed_text,
+                        "content_id":          content_id,
+                        "name":                name,
+                        "area":                area,
+                        "category":            category,
+                        "title":               title,
+                        "content":             content,
+                        "context":             context,             # 생성된 컨텍스트
+                        "contextualized_text": contextualized_text, # BM25 색인용
+                        "keywords":            keywords,
+                        "text":                f"{title}\n{content}",
                     },
                 )
             ],
         )
+
+    # BM25 캐시 무효화 → 다음 검색 시 자동 재빌드
+    invalidate_bm25_cache(COLLECTION_OVERVIEW)
     return len(chunks)
 
 
@@ -281,7 +403,7 @@ def search_festival_news(query: str, top_k: int = 5) -> list[dict]:
 
 def search_tour_overviews(query: str, area: str | None = None,
                           category: str | None = None, top_k: int = 5) -> list[dict]:
-    """GPT 청킹된 장소 개요 컬렉션에서 자연어 검색."""
+    """GPT 청킹된 장소 개요 컬렉션에서 Semantic 단독 검색 (하위 호환)."""
     _ensure_collection(COLLECTION_OVERVIEW)
     vector = _embed(query)
     must = []
@@ -297,6 +419,95 @@ def search_tour_overviews(query: str, area: str | None = None,
         query_filter=search_filter,
     )
     return [{"score": h.score, **h.payload} for h in hits]
+
+
+def search_tour_overviews_hybrid(
+    query: str,
+    area: str | None = None,
+    category: str | None = None,
+    top_k: int = 5,
+    sem_weight: float = 0.7,
+    bm25_weight: float = 0.3,
+) -> list[dict]:
+    """
+    Contextual Embedding + Contextual BM25 하이브리드 검색.
+
+    1) Semantic: contextualized_text 기반 벡터 검색 (Qdrant)
+    2) BM25:     contextualized_text 토큰 기반 키워드 검색 (rank-bm25)
+    3) RRF(Reciprocal Rank Fusion)로 두 결과를 결합
+
+    rank-bm25 미설치 시 Semantic 단독 검색으로 자동 폴백.
+    """
+    _ensure_collection(COLLECTION_OVERVIEW)
+    fetch_n = top_k * 4  # RRF를 위해 넉넉하게 수집
+
+    # ── 1) Semantic 검색 ──────────────────────────────────────────────────────
+    vector = _embed(query)
+    must = []
+    if area:
+        must.append(FieldCondition(key="area", match=MatchValue(value=area)))
+    if category:
+        must.append(FieldCondition(key="category", match=MatchValue(value=category)))
+    search_filter = Filter(must=must) if must else None
+
+    sem_hits = get_client().search(
+        collection_name=COLLECTION_OVERVIEW,
+        query_vector=vector,
+        limit=fetch_n,
+        query_filter=search_filter,
+        with_payload=True,
+    )
+    sem_rank:      dict[int, int]  = {h.id: rank for rank, h in enumerate(sem_hits)}
+    id_to_payload: dict[int, dict] = {h.id: h.payload for h in sem_hits}
+
+    # ── 2) BM25 검색 ─────────────────────────────────────────────────────────
+    bm25_rank: dict[int, int] = {}
+    bm25_data = _get_bm25_index(COLLECTION_OVERVIEW) if _BM25_AVAILABLE else None
+
+    if bm25_data:
+        tokens = _tokenize(query)
+        raw_scores = bm25_data["index"].get_scores(tokens)
+
+        filtered: list[tuple[int, dict, float]] = []
+        for pid, payload, score in zip(
+            bm25_data["ids"], bm25_data["payloads"], raw_scores
+        ):
+            if area and payload.get("area") != area:
+                continue
+            if category and payload.get("category") != category:
+                continue
+            filtered.append((pid, payload, score))
+
+        filtered.sort(key=lambda x: x[2], reverse=True)
+        for rank, (pid, payload, _) in enumerate(filtered[:fetch_n]):
+            bm25_rank[pid] = rank
+            id_to_payload.setdefault(pid, payload)
+
+    # BM25 없으면 Semantic 단독 반환
+    if not bm25_rank:
+        return [{"score": h.score, **h.payload} for h in sem_hits[:top_k]]
+
+    # ── 3) RRF 융합 ───────────────────────────────────────────────────────────
+    big = fetch_n + 100  # 미등장 문서 패널티 순위
+    all_ids = set(sem_rank) | set(bm25_rank)
+    rrf: dict[int, float] = {
+        pid: (
+            sem_weight  / (60 + sem_rank.get(pid,  big)) +
+            bm25_weight / (60 + bm25_rank.get(pid, big))
+        )
+        for pid in all_ids
+    }
+
+    top_ids = sorted(rrf, key=rrf.__getitem__, reverse=True)[:top_k]
+    return [
+        {
+            "score":         rrf[pid],
+            "semantic_rank": sem_rank.get(pid),
+            "bm25_rank":     bm25_rank.get(pid),
+            **id_to_payload.get(pid, {}),
+        }
+        for pid in top_ids
+    ]
 
 
 def collection_counts() -> dict[str, int]:

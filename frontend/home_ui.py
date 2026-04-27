@@ -76,20 +76,6 @@ div.stButton > button {
 }
 div.stButton > button:hover { border-color: #4A90E2; color: #4A90E2; }
 
-/* ── 카테고리 아이콘 버튼 ── */
-.cat-btn > button {
-    border-radius: 50% !important; border: 2px solid #eee !important;
-    background: #f7f7f7 !important;
-    font-size: clamp(18px, 4vw, 22px) !important;
-    width: clamp(48px, 10vw, 56px) !important;
-    height: clamp(48px, 10vw, 56px) !important;
-    min-height: unset !important;
-    padding: 0 !important;
-}
-.cat-btn.active > button {
-    border-color: #4A90E2 !important; background: #EBF4FF !important;
-}
-
 /* ── 카테고리 칩 (list 뷰) ── */
 .chip-pill-row {
     display: flex;
@@ -253,6 +239,10 @@ def cached_search(si: str, category: str) -> list[dict]:
 @st.cache_data(ttl=600, show_spinner=False)
 def cached_detail(content_id: str) -> dict:
     return tour_api.get_detail(content_id)
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_place_images(name: str, address: str) -> list:
+    return naver_validator.search_place_images(name, address, count=4)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_accessibility(name: str, address: str, image_urls: tuple = (),
@@ -571,6 +561,7 @@ def _render_card_grid(places: list[dict], key_prefix: str, cols: int = 2, compac
                     st.session_state.selected_place  = place
                     st.session_state.place_detail    = detail
                     st.session_state.accessibility   = None
+                    st.session_state.previous_view   = st.session_state.view
                     st.session_state.view            = "detail"
                     st.rerun()
         st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
@@ -582,28 +573,100 @@ def _render_card_grid(places: list[dict], key_prefix: str, cols: int = 2, compac
 def render_detail():
     place  = st.session_state.selected_place
     detail = st.session_state.place_detail
-    si  = st.session_state.selected_si or ""
-    cat = st.session_state.selected_category or ""
 
     if st.button("← 목록으로"):
-        st.session_state.view = "list"
+        st.session_state.view = st.session_state.get("previous_view", "list")
         st.rerun()
 
+    si_label = st.session_state.selected_si or "전국"
+    cat_label = st.session_state.selected_category or st.session_state.get("random_category") or "전체"
+    
     st.markdown(
-        f'<div class="breadcrumb">{si} › <span>{cat}</span> › <span>{place.get("이름","")}</span></div>',
+        f'<div class="breadcrumb">{si_label} › <span>{cat_label}</span> › <span>{place.get("이름","")}</span></div>',
         unsafe_allow_html=True,
     )
 
     name     = detail.get("이름") or place.get("이름", "")
     addr     = detail.get("주소") or place.get("주소", "")
-    images   = detail.get("images", [])
+    images   = list(detail.get("images", []))
     overview = detail.get("개요", "")
     tel      = detail.get("전화번호", "")
 
+    if len(images) < 3:
+        _naver_imgs = cached_place_images(name, addr)
+        for _nurl in _naver_imgs:
+            if _nurl not in images:
+                images.append(_nurl)
+            if len(images) >= 3:
+                break
+    images = images[:3]
+
     if images:
-        st.image(images[0], use_container_width=True)
-        if len(images) > 1:
-            st.image(images[1], use_container_width=True)
+        import json as _json
+        import streamlit.components.v1 as _components
+
+        if len(images) == 1:
+            st.image(images[0], use_container_width=True)
+        else:
+            _imgs_js = _json.dumps(images)
+            _carousel_html = f"""
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:transparent;font-family:sans-serif}}
+.wrap{{width:100%;user-select:none;position:relative}}
+.slide-box{{width:100%;border-radius:10px;overflow:hidden;background:#eee;position:relative;height:340px}}
+.slide-box img{{width:100%;height:340px;object-fit:cover;display:none}}
+.slide-box img.on{{display:block}}
+.arr{{position:absolute;top:50%;transform:translateY(-50%);
+      background:rgba(0,0,0,0.35);border:none;border-radius:50%;
+      width:36px;height:36px;font-size:15px;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;
+      color:white;transition:background 0.15s;z-index:10;backdrop-filter:blur(2px)}}
+.arr:hover{{background:rgba(0,0,0,0.6)}}
+.arr-l{{left:10px}}
+.arr-r{{right:10px}}
+.bottom{{position:absolute;bottom:10px;left:0;right:0;
+         display:flex;align-items:center;justify-content:center;gap:6px}}
+.dot{{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,0.5);
+      cursor:pointer;transition:background 0.15s;border:none}}
+.dot.on{{background:white}}
+.counter{{position:absolute;top:8px;right:10px;
+          background:rgba(0,0,0,0.4);color:white;
+          font-size:11px;padding:2px 8px;border-radius:999px;backdrop-filter:blur(2px)}}
+</style></head><body>
+<div class="wrap">
+  <div class="slide-box" id="sb">
+    <button class="arr arr-l" onclick="move(-1)">&#9664;</button>
+    <button class="arr arr-r" onclick="move(1)">&#9654;</button>
+    <div class="bottom" id="dots"></div>
+    <span class="counter" id="cnt"></span>
+  </div>
+</div>
+<script>
+const srcs={_imgs_js};
+let cur=0;
+const sb=document.getElementById('sb');
+const dotsEl=document.getElementById('dots');
+const cntEl=document.getElementById('cnt');
+srcs.forEach((s,i)=>{{
+  const img=document.createElement('img');
+  img.src=s; if(i===0)img.classList.add('on');
+  sb.insertBefore(img,sb.firstChild);
+  const d=document.createElement('button');
+  d.className='dot'+(i===0?' on':'');
+  d.onclick=()=>go(i); dotsEl.appendChild(d);
+}});
+function update(){{
+  sb.querySelectorAll('img').forEach((img,i)=>img.classList.toggle('on',i===cur));
+  dotsEl.querySelectorAll('.dot').forEach((d,i)=>d.classList.toggle('on',i===cur));
+  cntEl.textContent=(cur+1)+'/'+srcs.length;
+}}
+function move(dir){{cur=(cur+dir+srcs.length)%srcs.length;update();}}
+function go(i){{cur=i;update();}}
+update();
+</script></body></html>"""
+            _components.html(_carousel_html, height=355)
 
     st.markdown(f"### {name}")
     if addr:
@@ -753,12 +816,26 @@ def render_detail():
         inference_note = m.get("inference_note", "")
 
         if key == "entrance_step":
-            v = "단차 없음" if m.get("has_step") is False else ("단차 있음" if m.get("has_step") else "미확인")
-            h = m.get("estimated_height_cm")
-            if h:
-                v += f" (~{h}cm)"
-            if m.get("has_ramp_alternative"):
-                v += ", 경사로 있음"
+            ve = (vision or {}).get("entrance", {})
+            if ve and ve.get("step_detected") is not None:
+                # Vision 분석 결과 우선 사용
+                step = ve.get("step_detected")
+                v = "단차 없음" if step is False else "단차 있음"
+                h = ve.get("step_height_cm_est")
+                if h:
+                    v += f" (~{h}cm)"
+                if ve.get("ramp_detected"):
+                    v += ", 경사로 있음"
+                status = "🔴" if step else "🟢"
+                evidence = []
+                inference_note = "📷 사진 분석 결과 기반"
+            else:
+                v = "단차 없음" if m.get("has_step") is False else ("단차 있음" if m.get("has_step") else "미확인")
+                h = m.get("estimated_height_cm")
+                if h:
+                    v += f" (~{h}cm)"
+                if m.get("has_ramp_alternative"):
+                    v += ", 경사로 있음"
         elif key in ("elevator", "accessible_restroom", "accessible_parking"):
             available = m.get("available")
             # official 데이터로 이미 확인된 시설은 GPT 판단과 무관하게 "있음"으로 표시
@@ -1184,6 +1261,18 @@ def render_list():
 #  뷰: 홈 페이지
 # ══════════════════════════════════════════════════════════════════════════════
 def render_home():
+    # ── 커스텀 카테고리 버튼 처리 (HTML a 태그 클릭) ─────────────────────────
+    if "rnd_cat" in st.query_params:
+        label = st.query_params.get("rnd_cat")
+        st.session_state.random_category = label
+        with st.spinner(f"전국 {label} 불러오는 중..."):
+            if label == "축제":
+                st.session_state.random_places = cached_random_festivals(count=4)
+            else:
+                st.session_state.random_places = tour_api.search_random_places(label, count=4)
+        del st.query_params["rnd_cat"]
+        st.rerun()
+
     # ── 헤더 ──────────────────────────────────────────────────────────────────
     st.markdown(
         '<h2 style="text-align:center;font-size:clamp(17px,4.5vw,21px);font-weight:800;margin-bottom:18px">'
@@ -1218,28 +1307,35 @@ def render_home():
         unsafe_allow_html=True,
     )
 
-    cat_cols = st.columns(5, gap="small")
+    cat_cols = st.columns([1, 1, 1, 1, 1], gap="small")
     for i, (emoji, label) in enumerate(CATEGORIES):
         with cat_cols[i]:
             is_active = st.session_state.random_category == label
-            css = "cat-btn active" if is_active else "cat-btn"
-            st.markdown(f'<div class="{css}">', unsafe_allow_html=True)
-            if st.button(emoji, key=f"rnd_cat_{label}"):
-                with st.spinner(f"전국 {label} 불러오는 중..."):
-                    st.session_state.random_category = label
-                    if label == "축제":
-                        st.session_state.random_places = cached_random_festivals(count=4)
-                    else:
-                        st.session_state.random_places = tour_api.search_random_places(label, count=4)
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-            color  = "#4A90E2" if is_active else "#555"
-            weight = "700" if is_active else "400"
-            st.markdown(
-                f'<p style="text-align:center;font-size:clamp(10px,2.2vw,12px);'
-                f'margin:-2px 0 10px;color:{color};font-weight:{weight}">{label}</p>',
-                unsafe_allow_html=True,
-            )
+            border_color = "#4A90E2" if is_active else "#eee"
+            bg_color = "#EBF4FF" if is_active else "#f7f7f7"
+            text_color = "#4A90E2" if is_active else "#555"
+            weight = "700" if is_active else "500"
+            
+            st.markdown(f"""
+            <a href="?rnd_cat={label}" target="_self" style="text-decoration: none;">
+                <div style="
+                    border-radius: 12px;
+                    border: 2px solid {border_color};
+                    background: {bg_color};
+                    height: 60px;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+                    cursor: pointer;
+                    transition: 0.2s;
+                ">
+                    <span style="font-size: 22px; line-height: 1.1;">{emoji}</span>
+                    <span style="font-size: 11px; color: {text_color}; font-weight: {weight}; margin-top: 2px;">{label}</span>
+                </div>
+            </a>
+            """, unsafe_allow_html=True)
 
     # 첫 접속 시 관광지 자동 로드
     if not st.session_state.random_places and st.session_state.random_category is None:

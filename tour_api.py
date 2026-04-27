@@ -388,6 +388,37 @@ def get_detail(content_id: str) -> dict:
     if item.get("firstimage2") and item.get("firstimage2") != item.get("firstimage"):
         images.append(item["firstimage2"])
 
+    # detailImage2로 추가 사진 수집 (최대 5장 / 파일명 유사 중복 제거)
+    import re as _re
+    def _img_base(url: str) -> str:
+        fname = url.rstrip("/").split("/")[-1].split("?")[0]
+        return _re.sub(r"\d+$", "", fname.rsplit(".", 1)[0])
+
+    seen_bases = {_img_base(u) for u in images}
+    img_data = _get("detailImage2", {
+        "contentId": content_id,
+        "imageYN": "Y",
+        "subImageYN": "Y",
+        "numOfRows": 10,
+        "pageNo": 1,
+    })
+    img_items = (
+        (img_data.get("response", {}).get("body", {}).get("items", {}) or {})
+        .get("item", [])
+    )
+    if isinstance(img_items, dict):
+        img_items = [img_items]
+    for ei in (img_items or []):
+        url = ei.get("originimgurl", "") or ei.get("smallimageurl", "")
+        if not url or url in images:
+            continue
+        b = _img_base(url)
+        if b not in seen_bases:
+            images.append(url)
+            seen_bases.add(b)
+        if len(images) >= 5:
+            break
+
     return {
         "이름": item.get("title", ""),
         "주소": item.get("addr1", ""),

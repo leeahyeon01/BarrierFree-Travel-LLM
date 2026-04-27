@@ -262,7 +262,8 @@ def detect_positives(texts: list[dict]) -> list[str]:
 def infer_with_gpt(facility_name: str, texts: list[dict],
                    official_info: dict = None,
                    rag_chunks: list[dict] = None,
-                   category: str = "") -> dict:
+                   category: str = "",
+                   keyword_warnings: list = None) -> dict:
     """GPT-4o로 수집 텍스트에서 접근성 수치 및 신호 추론.
     리뷰가 없어도 시설명·공식정보 기반 지식 추론을 수행한다."""
     official_str = json.dumps(official_info or {}, ensure_ascii=False)
@@ -303,6 +304,25 @@ evidence는 ["리뷰 없음 — 지식 기반 추론"]으로 기재하세요."""
 ───────────────────────────────────────
 위 RAG 정보는 사전에 수집·정제된 신뢰도 높은 데이터입니다. 실시간 리뷰와 상충할 경우 양쪽 근거를 모두 반영하세요."""
 
+    # ── 키워드 경고 검증 섹션 ────────────────────────────────────────────────
+    keyword_section = ""
+    if keyword_warnings:
+        kw_lines = "\n".join(
+            f'- [{w.get("severity","")}] {w.get("category","")} '
+            f'(키워드: "{w.get("keyword","")}", 스니펫: "{w.get("excerpt","")[:120]}")'
+            for w in keyword_warnings
+        )
+        keyword_section = f"""
+
+[규칙 기반 키워드 경고 — 오탐 검증 필요]
+───────────────────────────────────────
+{kw_lines}
+───────────────────────────────────────
+위 경고는 텍스트에서 특정 키워드가 자동 탐지된 결과입니다.
+각 경고가 실제 이 시설({facility_name})의 접근성 문제를 정확히 설명하는지 판단하세요.
+다른 장소 언급, 가정문, 과거 개선 전 상태, 부정문("계단이 없다") 등 오탐으로 판단되면
+false_positive_warnings 배열에 카테고리와 이유를 기재하세요."""
+
     category_context = _CATEGORY_CONTEXT.get(category, "")
 
     prompt = f"""당신은 교통약자 시설 접근성 분석 전문가입니다.
@@ -318,7 +338,7 @@ evidence는 ["리뷰 없음 — 지식 기반 추론"]으로 기재하세요."""
 시설명: {facility_name}
 공식 등록 편의시설 정보: {official_str}
 
-{data_section}{rag_section}
+{data_section}{rag_section}{keyword_section}
 
 {{
   "overall_risk": "🔴 위험 | 🟡 주의 | 🟢 양호",
@@ -358,6 +378,12 @@ evidence는 ["리뷰 없음 — 지식 기반 추론"]으로 기재하세요."""
       "actual_finding": "실제 리뷰 발견 내용",
       "severity": "high | medium | low",
       "evidence": "리뷰 원문"
+    }}
+  ],
+  "false_positive_warnings": [
+    {{
+      "category": "오탐으로 판단된 경고 카테고리 (예: 🔴 입구/진입 장애물)",
+      "reason": "오탐 이유 (예: 다른 장소 언급, 부정문, 과거 개선 전 상태 등)"
     }}
   ],
   "summary": "2~3문장 종합 평가"
@@ -507,6 +533,49 @@ def fetch_og_image(url: str) -> str:
         return m.group(1) if m else ""
     except Exception:
         return ""
+
+
+def _naver_thumb_to_original(thumb_url: str) -> str:
+    """네이버 프록시 썸네일 URL(search.pstatic.net)에서 원본 이미지 URL 추출."""
+    if not thumb_url:
+        return thumb_url
+    if "search.pstatic.net" in thumb_url:
+        from urllib.parse import urlparse, parse_qs, unquote
+        qs = parse_qs(urlparse(thumb_url).query)
+        src = qs.get("src", [""])[0]
+        if src:
+            return unquote(src)
+    return thumb_url
+
+
+def search_place_images(name: str, address: str = "", count: int = 3) -> list:
+    """네이버 이미지 검색으로 장소 사진 원본 URL 목록 반환."""
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+        return []
+    query = f"{name} {address[:30]}".strip() if address else name
+    try:
+        resp = requests.get(
+            "https://openapi.naver.com/v1/search/image.json",
+            headers={
+                "X-Naver-Client-Id": NAVER_CLIENT_ID,
+                "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
+            },
+            params={"query": query, "display": min(count * 3, 20), "sort": "sim", "filter": "large"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        urls = []
+        for item in items:
+            thumb = item.get("thumbnail", "")
+            original = _naver_thumb_to_original(thumb)
+            if original and original.startswith("http") and original not in urls:
+                urls.append(original)
+            if len(urls) >= count:
+                break
+        return urls
+    except Exception:
+        return []
 
 
 def fetch_blog_content(url: str, max_chars: int = 3000, timeout: int = 6) -> str:
@@ -702,7 +771,7 @@ def validate_accessibility(
     rag_chunks: list[dict] = []
     try:
         import vector_store as _vs
-        rag_chunks = _vs.search_tour_overviews(
+        rag_chunks = _vs.search_tour_overviews_hybrid(
             f"{facility_name} 접근성 휠체어", top_k=3
         )
         if hasattr(_vs, "search_accessibility_chunks"):
@@ -721,17 +790,53 @@ def validate_accessibility(
     warnings  = detect_warnings(all_texts)
     positives = detect_positives(all_texts)
 
-    # 3) GPT 접근성 수치 추론 (본문 + RAG 청크 전달)
+    # 3) GPT 접근성 수치 추론 (본문 + RAG 청크 + 키워드 경고 전달 → 오탐 검증)
     gpt_result = infer_with_gpt(facility_name, all_texts, official_info,
                                 rag_chunks=rag_chunks or None,
-                                category=category)
+                                category=category,
+                                keyword_warnings=warnings or None)
 
     # 4) Vision 분석
     vision_result = analyze_images(image_urls or [], facility_name) if image_urls else {}
 
-    # 5) 종합 위험도 (규칙 경고가 있으면 GPT 결과보다 우선)
+    # 5) 3-way 교차검증 후 경고 정제
+    # 5-a) GPT가 오탐으로 판단한 경고 제거
+    fp_categories = {
+        fp.get("category", "")
+        for fp in gpt_result.get("false_positive_warnings", [])
+        if fp.get("category")
+    }
+    if fp_categories:
+        warnings = [w for w in warnings if w.get("category", "") not in fp_categories]
+
+    # 5-b) Vision ↔ entrance_step 메트릭 동기화
+    vision_entrance = (vision_result or {}).get("entrance", {})
+    entrance_metric = gpt_result.setdefault("metrics", {}).setdefault("entrance_step", {})
+
+    if vision_entrance.get("step_detected") is True:
+        # Vision이 단차 감지 → entrance_step을 위험으로 강제 업데이트
+        entrance_metric["has_step"] = True
+        entrance_metric["status"] = "🔴"
+        h = vision_entrance.get("step_height_cm_est")
+        if h:
+            entrance_metric["estimated_height_cm"] = h
+        entrance_metric.setdefault("evidence", [])
+        entrance_metric["evidence"].insert(0, f"📷 사진 분석: 단차 감지" + (f" (~{h}cm)" if h else ""))
+        entrance_metric["inference_note"] = "사진 분석 결과 기반"
+    elif vision_entrance.get("step_detected") is False:
+        # Vision이 단차 없음 → 입구단차 경고 제거
+        warnings = [
+            w for w in warnings
+            if "입구/진입" not in w.get("category", "")
+        ]
+
+    # 5-c) 정제된 경고 + Vision 단차 기준으로 종합 위험도 확정
     has_red = any("🔴" in w.get("severity", "") for w in warnings)
-    overall_risk = "🔴 위험" if has_red else gpt_result.get("overall_risk", "❓ 알 수 없음")
+    vision_step_danger = vision_entrance.get("step_detected") is True
+    if has_red or vision_step_danger:
+        overall_risk = "🔴 위험"
+    else:
+        overall_risk = gpt_result.get("overall_risk", "❓ 알 수 없음")
 
     return {
         "facility_name": facility_name,
