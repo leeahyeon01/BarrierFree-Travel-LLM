@@ -21,6 +21,7 @@ except ImportError:
 
 load_dotenv()
 
+QDRANT_URL = os.getenv("QDRANT_URL", "")
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 EMBED_MODEL = "text-embedding-3-small"
@@ -64,7 +65,14 @@ _qdrant: QdrantClient | None = None
 def get_client() -> QdrantClient:
     global _qdrant
     if _qdrant is None:
-        _qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+        if QDRANT_URL:
+            # ngrok 무료 버전의 'Browser Warning' 페이지를 건너뛰기 위해 헤더 추가
+            _qdrant = QdrantClient(
+                url=QDRANT_URL,
+                metadata={"ngrok-skip-browser-warning": "69420"}
+            )
+        else:
+            _qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
     return _qdrant
 
 
