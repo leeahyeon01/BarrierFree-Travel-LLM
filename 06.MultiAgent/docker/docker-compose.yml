@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  agent_backend:
+    build:
+      # 빌드 컨텍스트를 부모 디렉토리(04_barrier_free_chatbot)로 설정
+      # → vector_store.py / naver_validator.py / eval/ 등 공유 모듈 포함 가능
+      context: ../..
+      dockerfile: 06.MultiAgent/docker/backend.Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - QDRANT_HOST=${QDRANT_HOST:-localhost}
+      - QDRANT_PORT=${QDRANT_PORT:-6333}
+      - QDRANT_URL=${QDRANT_URL:-}
+    volumes:
+      - itinerary_data:/app/data/itineraries
+    restart: always
+
+  agent_frontend:
+    image: python:3.11-slim
+    working_dir: /app
+    command: >
+      sh -c "pip install streamlit requests -q &&
+             streamlit run frontend/app.py --server.port 8501 --server.address 0.0.0.0"
+    volumes:
+      - ../frontend:/app/frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://agent_backend:8000
+    depends_on:
+      - agent_backend
+    restart: always
+
+volumes:
+  itinerary_data:
