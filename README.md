@@ -8,7 +8,9 @@
 
 <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 
-
+[<img  src="https://camo.githubusercontent.com/3611f930d3bdf0674c4f407d7c56870354310bf3dbc057a088a224a9a6841b67/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f53747265616d6c69742d312e33352d4646344234423f7374796c653d666c61742d737175617265266c6f676f3d73747265616d6c6974266c6f676f436f6c6f723d7768697465" />
+<img  src=
+"https://camo.githubusercontent.com/a4598a7970ccfa3ddfd1cdddb36487c83152a9e4a53f0dd7f66654d4ba785821/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f507974686f6e2d332e31312b2d3337373641423f7374796c653d666c61742d737175617265266c6f676f3d707974686f6e266c6f676f436f6c6f723d7768697465" />
 
 [<img src="https://img.shields.io/badge/-readme.md-important?style=flat&logo=google-chrome&logoColor=white" />]() [<img src="https://img.shields.io/badge/-tech blog-blue?style=flat&logo=google-chrome&logoColor=white" />]() [<img src="https://img.shields.io/badge/release-v0.0.0-yellow?style=flat&logo=google-chrome&logoColor=white" />]() 
 <br/> [<img src="https://img.shields.io/badge/프로젝트 기간-2026.04.15~2026.04.28-green?style=flat&logo=&logoColor=white" />]()
