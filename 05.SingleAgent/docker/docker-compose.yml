@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  agent_backend:
+    build: 
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    restart: always
