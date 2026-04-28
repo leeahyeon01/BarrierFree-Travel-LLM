@@ -45,7 +45,7 @@
 👉🏻 [API 바로보기](/backend/APIs.md)
 
 ## 🤔배포
-Streanlit Cloud 배포
+Ngrok,Streamlit Cloud 배포
 
 
 
