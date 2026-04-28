@@ -40,10 +40,11 @@
 ### 화면 구성
 |Screen #1|Screen #2|
 |:---:|:---:|
-|<img src="https://user-images.githubusercontent.com/80824750/208456048-acbf44a8-cd71-4132-b35a-500047adbe1c.gif" width="400"/>|<img src="https://user-images.githubusercontent.com/80824750/208456234-fb5fe434-aa65-4d7a-b955-89098d5bbe0b.gif" width="400"/>|
+|<img src="https://www.image2url.com/r2/default/images/1777358145266-8182989c-a9a6-4798-be8c-825796d2d31e.png" width="400"/>|<img src="https://www.image2url.com/r2/default/images/1777358494181-8c344287-f775-439f-acb4-1a74bbc03f4c.png" width="400"/>|
+
 
 ### 프로토타입
-<img src="https://user-images.githubusercontent.com/80824750/208454673-0449e49c-57c6-4a6b-86cf-66c5b1e623dc.png">
+<img src="https://i.postimg.cc/nrTzGhKC/llmhwamyeon1.png">
 
 <br />
 
