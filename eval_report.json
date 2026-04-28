@@ -1,0 +1,319 @@
+{
+  "generated_at": "2026-04-28T11:36:23.618105",
+  "config": {
+    "k": 5,
+    "coverage_mode": "gpt",
+    "skip_faithfulness": false,
+    "skip_retrieval": false
+  },
+  "summary": {
+    "num_cases": 5,
+    "retrieval": {
+      "mean_precision_at_k": 0.4,
+      "mean_recall_at_k": 1.0,
+      "mrr": 0.9
+    },
+    "faithfulness": {
+      "mean_score": 0.0
+    },
+    "coverage": {
+      "mean_score": 1.0
+    },
+    "rules": {
+      "mean_score": 0.6667,
+      "pass_rate": 0.3333
+    }
+  },
+  "cases": [
+    {
+      "id": "TC-001",
+      "query": "경복궁 휠체어 접근성",
+      "retrieval": {
+        "precision_at_k": 0.4,
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "k": 5
+      },
+      "faithfulness": {
+        "score": 0.0,
+        "num_claims": 0,
+        "supported": 0,
+        "contradicted": 0,
+        "not_found": 0,
+        "error": "claim 추출 실패: '\"claims\"'"
+      },
+      "coverage": {
+        "score": 1.0,
+        "num_requirements": 3,
+        "covered": 3,
+        "missing": 0,
+        "mode": "keyword(gpt_fallback: Error code: 401 - {'error': {'message': \"You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_KEY), or as the password field (with blank username) if you're accessing the API from your browser and are prompted for a username and password. You can obtain an API key from https://platform.openai.com/account/api-keys.\", 'type': 'invalid_request_error', 'param': None, 'code': None}})",
+        "details": [
+          {
+            "requirement": "휠체어 접근 가능 여부",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "장애인 화장실 유무",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "주차 정보",
+            "covered": true,
+            "evidence": ""
+          }
+        ]
+      },
+      "rules": {
+        "passed": true,
+        "score": 1.0,
+        "checks": [
+          {
+            "rule": "session_count",
+            "passed": true,
+            "detail": "발견된 세션 헤더: 0개 / 기대값: 1개"
+          },
+          {
+            "rule": "daily_time",
+            "passed": true,
+            "detail": "시간 표현 없음 (검사 SKIP)"
+          },
+          {
+            "rule": "group_composition",
+            "passed": true,
+            "detail": "모든 그룹 언급 확인"
+          }
+        ]
+      }
+    },
+    {
+      "id": "TC-002",
+      "query": "서울 무장애 2박 3일 여행 일정",
+      "retrieval": {
+        "precision_at_k": 0.6,
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "k": 5
+      },
+      "faithfulness": {
+        "score": 0.0,
+        "num_claims": 0,
+        "supported": 0,
+        "contradicted": 0,
+        "not_found": 0,
+        "error": "claim 추출 실패: '\"claims\"'"
+      },
+      "coverage": {
+        "score": 1.0,
+        "num_requirements": 4,
+        "covered": 4,
+        "missing": 0,
+        "mode": "keyword(gpt_fallback: Error code: 401 - {'error': {'message': \"You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_KEY), or as the password field (with blank username) if you're accessing the API from your browser and are prompted for a username and password. You can obtain an API key from https://platform.openai.com/account/api-keys.\", 'type': 'invalid_request_error', 'param': None, 'code': None}})",
+        "details": [
+          {
+            "requirement": "휠체어 접근 가능 장소 포함",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "엘리베이터 유무 언급",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "장애인 주차 정보",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "일별 이동 동선 구분",
+            "covered": true,
+            "evidence": ""
+          }
+        ]
+      },
+      "rules": {
+        "passed": false,
+        "score": 0.3333333333333333,
+        "checks": [
+          {
+            "rule": "session_count",
+            "passed": false,
+            "detail": "발견된 세션 헤더: 16개 / 기대값: 6개"
+          },
+          {
+            "rule": "daily_time",
+            "passed": false,
+            "detail": "파싱된 총 시간: 20.0h (허용: 3~12h)"
+          },
+          {
+            "rule": "group_composition",
+            "passed": true,
+            "detail": "모든 그룹 언급 확인"
+          }
+        ]
+      }
+    },
+    {
+      "id": "TC-003",
+      "query": "부산 장애인 콜택시 이용 방법",
+      "retrieval": {
+        "precision_at_k": 0.2,
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "k": 5
+      },
+      "faithfulness": {
+        "score": 0.0,
+        "num_claims": 0,
+        "supported": 0,
+        "contradicted": 0,
+        "not_found": 0,
+        "error": "claim 추출 실패: '\"claims\"'"
+      },
+      "coverage": {
+        "score": 1.0,
+        "num_requirements": 4,
+        "covered": 4,
+        "missing": 0,
+        "mode": "keyword(gpt_fallback: Error code: 401 - {'error': {'message': \"You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_KEY), or as the password field (with blank username) if you're accessing the API from your browser and are prompted for a username and password. You can obtain an API key from https://platform.openai.com/account/api-keys.\", 'type': 'invalid_request_error', 'param': None, 'code': None}})",
+        "details": [
+          {
+            "requirement": "예약 전화번호",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "운영 시간",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "이용 요금",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "우선 배차 대상",
+            "covered": true,
+            "evidence": ""
+          }
+        ]
+      },
+      "rules": null
+    },
+    {
+      "id": "TC-004",
+      "query": "제주 휠체어 해변 접근 가능한 곳",
+      "retrieval": {
+        "precision_at_k": 0.4,
+        "recall_at_k": 1.0,
+        "mrr": 0.5,
+        "k": 5
+      },
+      "faithfulness": {
+        "score": 0.0,
+        "num_claims": 0,
+        "supported": 0,
+        "contradicted": 0,
+        "not_found": 0,
+        "error": "claim 추출 실패: '\"claims\"'"
+      },
+      "coverage": {
+        "score": 1.0,
+        "num_requirements": 3,
+        "covered": 3,
+        "missing": 0,
+        "mode": "keyword(gpt_fallback: Error code: 401 - {'error': {'message': \"You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_KEY), or as the password field (with blank username) if you're accessing the API from your browser and are prompted for a username and password. You can obtain an API key from https://platform.openai.com/account/api-keys.\", 'type': 'invalid_request_error', 'param': None, 'code': None}})",
+        "details": [
+          {
+            "requirement": "접근 가능 해변 이름",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "접근 보조 시설 정보",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "장애인 편의시설 유무",
+            "covered": true,
+            "evidence": ""
+          }
+        ]
+      },
+      "rules": null
+    },
+    {
+      "id": "TC-005",
+      "query": "고령자·유아 동반 가족 무장애 여행 추천",
+      "retrieval": {
+        "precision_at_k": 0.4,
+        "recall_at_k": 1.0,
+        "mrr": 1.0,
+        "k": 5
+      },
+      "faithfulness": {
+        "score": 0.0,
+        "num_claims": 0,
+        "supported": 0,
+        "contradicted": 0,
+        "not_found": 0,
+        "error": "claim 추출 실패: '\"claims\"'"
+      },
+      "coverage": {
+        "score": 1.0,
+        "num_requirements": 4,
+        "covered": 4,
+        "missing": 0,
+        "mode": "keyword(gpt_fallback: Error code: 401 - {'error': {'message': \"You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_KEY), or as the password field (with blank username) if you're accessing the API from your browser and are prompted for a username and password. You can obtain an API key from https://platform.openai.com/account/api-keys.\", 'type': 'invalid_request_error', 'param': None, 'code': None}})",
+        "details": [
+          {
+            "requirement": "고령자 편의시설",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "유아/유모차 시설",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "휠체어 접근성",
+            "covered": true,
+            "evidence": ""
+          },
+          {
+            "requirement": "추천 장소 2곳 이상",
+            "covered": true,
+            "evidence": ""
+          }
+        ]
+      },
+      "rules": {
+        "passed": false,
+        "score": 0.6666666666666666,
+        "checks": [
+          {
+            "rule": "session_count",
+            "passed": false,
+            "detail": "발견된 세션 헤더: 0개 / 기대값: 2개"
+          },
+          {
+            "rule": "daily_time",
+            "passed": true,
+            "detail": "시간 표현 없음 (검사 SKIP)"
+          },
+          {
+            "rule": "group_composition",
+            "passed": true,
+            "detail": "모든 그룹 언급 확인"
+          }
+        ]
+      }
+    }
+  ]
+}

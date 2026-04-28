@@ -132,11 +132,43 @@ def _generate_chunk_context(full_document: str, chunk_content: str) -> str:
 
 _bm25_cache: dict[str, dict] = {}
 
+# 접근성 유의어 사전 — 쿼리 확장에 사용
+_ACCESSIBILITY_SYNONYMS: dict[str, list[str]] = {
+    "휠체어":    ["휠체어", "wheelchair"],
+    "단차":      ["단차", "계단", "턱", "문턱"],
+    "경사로":    ["경사로", "램프", "슬로프"],
+    "무장애":    ["무장애", "배리어프리", "barrier free"],
+    "장애인":    ["장애인", "교통약자"],
+    "엘리베이터":["엘리베이터", "승강기", "리프트"],
+    "주차":      ["주차", "주차장", "주차구역"],
+    "화장실":    ["화장실", "장애인화장실", "accessible restroom"],
+    "접근성":    ["접근성", "접근 가능", "이용 가능"],
+}
+
 
 def _tokenize(text: str) -> list[str]:
-    """한국어 BM25용 토크나이저 (공백·특수문자 분리, 2자 이상만)."""
+    """
+    한국어 BM25용 토크나이저.
+    - 공백 기반 단어 분리 (2자 이상)
+    - 한글 단어에 문자 bigram 추가 → 형태소 분석기 없이 부분 일치 보완
+      예) "경복궁에서" → ["경복궁에서", "경복", "복궁", "궁에", "에서"]
+    """
     text = re.sub(r"[^\w가-힣a-zA-Z0-9]", " ", text)
-    return [t for t in text.split() if len(t) > 1]
+    words = [t for t in text.split() if len(t) > 1]
+    bigrams: list[str] = []
+    for word in words:
+        if len(word) >= 3 and any('가' <= c <= '힣' for c in word):
+            bigrams.extend(word[i:i + 2] for i in range(len(word) - 1))
+    return words + bigrams
+
+
+def _expand_query(query: str) -> str:
+    """접근성 유의어 사전으로 쿼리 확장. 일치하는 유의어 그룹 전체를 append."""
+    extra: list[str] = []
+    for synonyms in _ACCESSIBILITY_SYNONYMS.values():
+        if any(s in query for s in synonyms):
+            extra.extend(s for s in synonyms if s not in query)
+    return (query + " " + " ".join(extra)).strip() if extra else query
 
 
 def _build_bm25_index(collection_name: str) -> None:
@@ -188,6 +220,98 @@ def invalidate_bm25_cache(collection_name: str | None = None) -> None:
         _bm25_cache.pop(collection_name, None)
     else:
         _bm25_cache.clear()
+
+
+# ── Multi-query 쿼리 변형 생성 ──────────────────────────────────────────────────
+
+_MULTI_QUERY_PROMPT = """\
+아래 접근성 검색 쿼리를 {n}가지 다른 표현으로 재작성하세요.
+무장애 여행 정보를 찾기 위한 쿼리입니다. 동의어·축약·구체화 등을 활용하세요.
+반드시 JSON만: {{"variants": ["변형1", "변형2"]}}
+
+원본 쿼리: "{query}"
+"""
+
+
+def _generate_query_variants(query: str, n: int = 2) -> list[str]:
+    """
+    GPT-4o-mini로 쿼리 변형 n개 생성.
+    실패 시 원본만 반환 (무중단 폴백).
+    """
+    try:
+        resp = _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": _MULTI_QUERY_PROMPT.format(query=query, n=n)}],
+            temperature=0.4,
+            max_tokens=120,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(resp.choices[0].message.content)
+        variants = data.get("variants", [])
+        return [v for v in variants if isinstance(v, str) and v.strip()]
+    except Exception:
+        return []
+
+
+# ── LLM Reranking ─────────────────────────────────────────────────────────────
+
+def _llm_rerank(query: str, candidates: list[dict], top_k: int) -> list[dict]:
+    """
+    GPT-4o-mini Pointwise Reranking.
+
+    RRF 후보 풀에서 쿼리-문서 관련도를 GPT로 재평가해 top_k개 재정렬.
+    접근성(휠체어·단차·경사로 등) 정보 포함 여부를 우선 기준으로 사용.
+    GPT 호출 실패 시 RRF 순서 그대로 반환(무중단 폴백).
+    """
+    if len(candidates) <= top_k:
+        return candidates
+
+    numbered = "\n\n".join(
+        f"[{i}] 제목: {c.get('title', '')}\n"
+        f"내용: {(c.get('content') or c.get('text', ''))[:250]}"
+        for i, c in enumerate(candidates)
+    )
+
+    prompt = (
+        f'검색 쿼리: "{query}"\n\n'
+        f"아래 {len(candidates)}개 문서를 쿼리 관련성 순으로 평가하세요.\n"
+        f"접근성(휠체어·단차·경사로·장애인 편의) 정보가 명시된 문서에 높은 점수를 주세요.\n"
+        f"가장 관련 높은 {top_k}개의 인덱스를 관련도 높은 순서대로 반환하세요.\n"
+        f"반드시 이 JSON 형식만: {{\"ranked\": [idx1, idx2, ...]}}\n\n"
+        f"{numbered}"
+    )
+
+    try:
+        resp = _openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=120,
+            response_format={"type": "json_object"},
+        )
+        data = json.loads(resp.choices[0].message.content)
+        ranked_ids = data.get("ranked", [])
+
+        seen: set[int] = set()
+        result: list[dict] = []
+        for idx in ranked_ids:
+            if isinstance(idx, int) and 0 <= idx < len(candidates) and idx not in seen:
+                result.append({**candidates[idx], "rerank_position": len(result)})
+                seen.add(idx)
+            if len(result) >= top_k:
+                break
+
+        # 부족할 경우 RRF 순서로 보충
+        for i, c in enumerate(candidates):
+            if i not in seen:
+                result.append({**c, "rerank_position": len(result)})
+            if len(result) >= top_k:
+                break
+
+        return result
+
+    except Exception:
+        return candidates[:top_k]
 
 
 # ── GPT 청킹 ─────────────────────────────────────────────────────────────────
@@ -429,28 +553,23 @@ def search_tour_overviews(query: str, area: str | None = None,
     return [{"score": h.score, **h.payload} for h in hits]
 
 
-def search_tour_overviews_hybrid(
+def _single_hybrid_rrf(
     query: str,
-    area: str | None = None,
-    category: str | None = None,
-    top_k: int = 5,
-    sem_weight: float = 0.7,
-    bm25_weight: float = 0.3,
-) -> list[dict]:
+    area: str | None,
+    category: str | None,
+    fetch_n: int,
+    sem_weight: float,
+    bm25_weight: float,
+) -> tuple[dict[int, float], dict[int, int], dict[int, int], dict[int, dict]]:
     """
-    Contextual Embedding + Contextual BM25 하이브리드 검색.
+    단일 쿼리에 대한 Semantic + BM25 RRF 점수 반환.
+    Multi-query 통합을 위해 내부 헬퍼로 분리.
 
-    1) Semantic: contextualized_text 기반 벡터 검색 (Qdrant)
-    2) BM25:     contextualized_text 토큰 기반 키워드 검색 (rank-bm25)
-    3) RRF(Reciprocal Rank Fusion)로 두 결과를 결합
-
-    rank-bm25 미설치 시 Semantic 단독 검색으로 자동 폴백.
+    Returns: (rrf_scores, sem_rank, bm25_rank, id_to_payload)
     """
     _ensure_collection(COLLECTION_OVERVIEW)
-    fetch_n = top_k * 4  # RRF를 위해 넉넉하게 수집
+    expanded = _expand_query(query)
 
-    # ── 1) Semantic 검색 ──────────────────────────────────────────────────────
-    vector = _embed(query)
     must = []
     if area:
         must.append(FieldCondition(key="area", match=MatchValue(value=area)))
@@ -458,6 +577,8 @@ def search_tour_overviews_hybrid(
         must.append(FieldCondition(key="category", match=MatchValue(value=category)))
     search_filter = Filter(must=must) if must else None
 
+    # Semantic
+    vector = _embed(expanded)
     sem_hits = get_client().search(
         collection_name=COLLECTION_OVERVIEW,
         query_vector=vector,
@@ -468,14 +589,12 @@ def search_tour_overviews_hybrid(
     sem_rank:      dict[int, int]  = {h.id: rank for rank, h in enumerate(sem_hits)}
     id_to_payload: dict[int, dict] = {h.id: h.payload for h in sem_hits}
 
-    # ── 2) BM25 검색 ─────────────────────────────────────────────────────────
+    # BM25
     bm25_rank: dict[int, int] = {}
     bm25_data = _get_bm25_index(COLLECTION_OVERVIEW) if _BM25_AVAILABLE else None
-
     if bm25_data:
-        tokens = _tokenize(query)
+        tokens = _tokenize(expanded)
         raw_scores = bm25_data["index"].get_scores(tokens)
-
         filtered: list[tuple[int, dict, float]] = []
         for pid, payload, score in zip(
             bm25_data["ids"], bm25_data["payloads"], raw_scores
@@ -485,18 +604,13 @@ def search_tour_overviews_hybrid(
             if category and payload.get("category") != category:
                 continue
             filtered.append((pid, payload, score))
-
         filtered.sort(key=lambda x: x[2], reverse=True)
         for rank, (pid, payload, _) in enumerate(filtered[:fetch_n]):
             bm25_rank[pid] = rank
             id_to_payload.setdefault(pid, payload)
 
-    # BM25 없으면 Semantic 단독 반환
-    if not bm25_rank:
-        return [{"score": h.score, **h.payload} for h in sem_hits[:top_k]]
-
-    # ── 3) RRF 융합 ───────────────────────────────────────────────────────────
-    big = fetch_n + 100  # 미등장 문서 패널티 순위
+    # RRF
+    big = fetch_n + 100
     all_ids = set(sem_rank) | set(bm25_rank)
     rrf: dict[int, float] = {
         pid: (
@@ -505,17 +619,82 @@ def search_tour_overviews_hybrid(
         )
         for pid in all_ids
     }
+    return rrf, sem_rank, bm25_rank, id_to_payload
 
-    top_ids = sorted(rrf, key=rrf.__getitem__, reverse=True)[:top_k]
-    return [
+
+def search_tour_overviews_hybrid(
+    query: str,
+    area: str | None = None,
+    category: str | None = None,
+    top_k: int = 5,
+    sem_weight: float = 0.7,
+    bm25_weight: float = 0.3,
+    rerank: bool = True,
+    multi_query: bool = True,
+) -> list[dict]:
+    """
+    Contextual Embedding + Contextual BM25 하이브리드 검색 + LLM Reranking.
+
+    1) 쿼리 확장: 접근성 유의어 사전으로 쿼리 보강
+    2) Multi-query: GPT로 변형 쿼리 2개 생성 → 각각 RRF → 통합 (multi_query=True 시)
+    3) Semantic: contextualized_text 기반 벡터 검색 (Qdrant)
+    4) BM25:     character bigram 강화 토크나이저 기반 키워드 검색
+    5) RRF:      Reciprocal Rank Fusion으로 결합
+    6) Rerank:   GPT-4o-mini로 최종 재정렬 (rerank=True 시)
+
+    rank-bm25 미설치 시 Semantic 단독 검색으로 자동 폴백.
+    """
+    fetch_n = top_k * 4
+
+    # ── 1) 원본 쿼리 RRF ─────────────────────────────────────────────────────
+    merged_rrf:    dict[int, float] = {}
+    merged_payload: dict[int, dict] = {}
+
+    rrf, sem_rank, bm25_rank, id_to_payload = _single_hybrid_rrf(
+        query, area, category, fetch_n, sem_weight, bm25_weight
+    )
+    for pid, score in rrf.items():
+        merged_rrf[pid] = merged_rrf.get(pid, 0.0) + score
+    merged_payload.update(id_to_payload)
+
+    # ── 2) Multi-query: 변형 쿼리 RRF 통합 ──────────────────────────────────
+    if multi_query:
+        for variant in _generate_query_variants(query, n=2):
+            v_rrf, _, _, v_payload = _single_hybrid_rrf(
+                variant, area, category, fetch_n, sem_weight, bm25_weight
+            )
+            for pid, score in v_rrf.items():
+                merged_rrf[pid] = merged_rrf.get(pid, 0.0) + score * 0.8  # 변형 쿼리 가중치
+                merged_payload.setdefault(pid, v_payload.get(pid, {}))
+
+    # BM25 없어서 merged_rrf에 bm25 기여가 없는 경우 → Semantic 단독 모드
+    if not bm25_rank:
+        sem_hits_only = sorted(merged_rrf, key=merged_rrf.__getitem__, reverse=True)
+        sem_candidates = [
+            {"score": merged_rrf[pid], **merged_payload.get(pid, {})}
+            for pid in sem_hits_only[:fetch_n]
+        ]
+        if rerank:
+            return _llm_rerank(query, sem_candidates, top_k)
+        return sem_candidates[:top_k]
+
+    # ── 3) 통합 RRF 기준 후보 풀 구성 ────────────────────────────────────────
+    pool_size = min(top_k * 3, len(merged_rrf))
+    pool_ids  = sorted(merged_rrf, key=merged_rrf.__getitem__, reverse=True)[:pool_size]
+    pool = [
         {
-            "score":         rrf[pid],
+            "score":         merged_rrf[pid],
             "semantic_rank": sem_rank.get(pid),
             "bm25_rank":     bm25_rank.get(pid),
-            **id_to_payload.get(pid, {}),
+            **merged_payload.get(pid, {}),
         }
-        for pid in top_ids
+        for pid in pool_ids
     ]
+
+    # ── 4) LLM Reranking ─────────────────────────────────────────────────────
+    if rerank:
+        return _llm_rerank(query, pool, top_k)
+    return pool[:top_k]
 
 
 def collection_counts() -> dict[str, int]:

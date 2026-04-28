@@ -86,8 +86,9 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text).strip()
 
 
-def _naver_get(endpoint: str, query: str, display: int = 5) -> list[dict]:
-    """Naver Search API 공통 호출 (blog / kin)"""
+def _naver_get(endpoint: str, query: str, display: int = 10,
+               sort: str = "date") -> list[dict]:
+    """Naver Search API 공통 호출 (blog / kin / news)"""
     if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
         return []
     try:
@@ -97,7 +98,7 @@ def _naver_get(endpoint: str, query: str, display: int = 5) -> list[dict]:
                 "X-Naver-Client-Id":     NAVER_CLIENT_ID,
                 "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
             },
-            params={"query": query, "display": display, "sort": "date"},
+            params={"query": query, "display": display, "sort": sort},
             timeout=6,
         )
         if resp.status_code == 200:
@@ -110,49 +111,55 @@ def _naver_get(endpoint: str, query: str, display: int = 5) -> list[dict]:
 # ── 수집 함수 ─────────────────────────────────────────────────────────────────
 
 def search_blogs(facility_name: str, location_hint: str = "",
-                 max_per_query: int = 5, category: str = "") -> list[dict]:
+                 max_per_query: int = 10, category: str = "") -> list[dict]:
     """접근성 관점별 다중 쿼리로 네이버 블로그 수집"""
-    # 도로명까지 포함하면 쿼리가 너무 길어지므로 시/구 2단어만 사용
     short_hint = " ".join(location_hint.split()[:2]) if location_hint else ""
     base = f"{short_hint} {facility_name}".strip()
-    # 주차·화장실·편의시설은 시설명만 사용해야 Naver에서 실제 매칭됨
-    queries = [
-        f"{base} 휠체어",
-        f"{base} 장애인 이용",
-        f"{facility_name} 장애인 주차장",
-        f"{facility_name} 장애인 화장실",
-        f"{facility_name} 장애인 편의시설",
-        f"{base} 유모차",
-        f"{base} 문턱 경사로",
-        f"{base} 접근성 후기",
+
+    # (query, sort) — 핵심 쿼리는 관련도순(sim) + 날짜순(date) 병행
+    query_specs: list[tuple[str, str]] = [
+        (f"{base} 휠체어",                   "sim"),
+        (f"{base} 휠체어",                   "date"),
+        (f"{base} 장애인 이용",               "sim"),
+        (f"{facility_name} 장애인 주차장",    "sim"),
+        (f"{facility_name} 장애인 화장실",    "sim"),
+        (f"{facility_name} 장애인 편의시설",  "sim"),
+        (f"{base} 유모차",                   "sim"),
+        (f"{base} 문턱 경사로",               "sim"),
+        (f"{base} 접근성 후기",               "date"),
+        (f"{facility_name} 배리어프리",       "sim"),
+        (f"{facility_name} 접근성",          "date"),
     ]
 
-    # 카테고리별 특화 쿼리 추가
     if category == "숙박":
-        queries += [
-            f"{facility_name} 배리어프리",
-            f"{facility_name} 장애인 객실",
-            f"{facility_name} 엘리베이터",
-            f"{facility_name} 접근성",
-            f"{facility_name} 무장애",
-            f"{facility_name} 장애인 편의",
+        query_specs += [
+            (f"{facility_name} 장애인 객실",   "sim"),
+            (f"{facility_name} 엘리베이터",    "sim"),
+            (f"{facility_name} 무장애",        "sim"),
+            (f"{facility_name} 장애인 편의",   "sim"),
         ]
     elif category == "음식점":
-        queries += [
-            f"{facility_name} 휠체어 입장",
-            f"{facility_name} 단차",
-            f"{facility_name} 문턱",
+        query_specs += [
+            (f"{facility_name} 휠체어 입장",   "sim"),
+            (f"{facility_name} 단차",          "sim"),
+            (f"{facility_name} 문턱",          "sim"),
+            (f"{base} 입구 계단",              "sim"),
         ]
     elif category == "문화시설":
-        queries += [
-            f"{facility_name} 장애인 관람",
-            f"{facility_name} 배리어프리",
-            f"{facility_name} 엘리베이터",
+        query_specs += [
+            (f"{facility_name} 장애인 관람",   "sim"),
+            (f"{facility_name} 엘리베이터",    "sim"),
+            (f"{facility_name} 휠체어 관람",   "sim"),
+        ]
+    elif category == "관광지":
+        query_specs += [
+            (f"{facility_name} 휠체어 탐방",   "sim"),
+            (f"{facility_name} 무장애 탐방",   "sim"),
         ]
 
     results, seen = [], set()
-    for q in queries:
-        for item in _naver_get("blog", q, max_per_query):
+    for q, sort in query_specs:
+        for item in _naver_get("blog", q, max_per_query, sort=sort):
             link = item.get("link", "")
             if link in seen:
                 continue
@@ -197,6 +204,35 @@ def search_kin(facility_name: str, location_hint: str = "",
                 "source":  "kin",
                 "query":   q,
                 "date":    "",
+                "title":   _strip_html(item.get("title", "")),
+                "snippet": _strip_html(item.get("description", "")),
+                "link":    link,
+            })
+    return results
+
+
+def search_news(facility_name: str, location_hint: str = "",
+                max_per_query: int = 5) -> list[dict]:
+    """네이버 뉴스에서 접근성 관련 기사 수집"""
+    short_hint = " ".join(location_hint.split()[:2]) if location_hint else ""
+    base = f"{short_hint} {facility_name}".strip()
+    queries = [
+        (f"{facility_name} 배리어프리",      "sim"),
+        (f"{facility_name} 무장애",          "sim"),
+        (f"{base} 장애인 접근성",             "sim"),
+        (f"{facility_name} 휠체어 접근",     "date"),
+    ]
+    results, seen = [], set()
+    for q, sort in queries:
+        for item in _naver_get("news", q, max_per_query, sort=sort):
+            link = item.get("link", "") or item.get("originallink", "")
+            if not link or link in seen:
+                continue
+            seen.add(link)
+            results.append({
+                "source":  "news",
+                "query":   q,
+                "date":    item.get("pubDate", ""),
                 "title":   _strip_html(item.get("title", "")),
                 "snippet": _strip_html(item.get("description", "")),
                 "link":    link,
@@ -279,15 +315,15 @@ def infer_with_gpt(facility_name: str, texts: list[dict],
 ═══════════════════════════════════════
 {block}
 ═══════════════════════════════════════
-텍스트를 분석하여 접근성을 추론하세요. 직접 언급이 없어도 문맥에서 추론 가능하면 반드시 수치를 추정하고,
-근거가 된 리뷰 원문을 그대로 인용하세요."""
+【중요】모든 사실적 주장은 위 텍스트에서 직접 발견한 내용만 evidence로 인용하세요.
+위 텍스트에 언급이 없는 항목은 수치를 임의 추정하지 말고 estimated_height_cm 등을 null로 두고,
+inference_note에 "데이터 미발견"이라고 기재하세요.
+evidence 배열에는 반드시 위 텍스트의 원문 구절을 그대로 복사하여 넣으세요 (paraphrase 금지)."""
     else:
         data_section = """⚠ 네이버 리뷰 데이터가 수집되지 않았습니다.
-시설명·공식정보·시설 유형에 대한 당신의 전문 지식으로 접근성을 추론하세요.
-한국의 일반적인 동종 시설 접근성 패턴, 시설 규모, 건축 연도 등을 근거로
-반드시 구체적인 수치(테이블 높이·통로폭 등)를 추정해야 합니다.
-추론에 직접 리뷰가 없을 경우 inference_note에 "지식 기반 추론"이라고 명시하세요.
-evidence는 ["리뷰 없음 — 지식 기반 추론"]으로 기재하세요."""
+시설명·공식정보·시설 유형에 대한 전문 지식으로 추론하되,
+evidence는 반드시 빈 배열 []로 두고 inference_note에 "지식 기반 추론: (근거)"를 기재하세요.
+수치(테이블 높이·통로폭 등)는 리뷰 원문 없이 추정한 경우 estimated_height_cm 등을 null로 두세요."""
 
     # ── RAG 사전 수집 청크 섹션 ──────────────────────────────────────────────
     rag_section = ""
@@ -302,7 +338,9 @@ evidence는 ["리뷰 없음 — 지식 기반 추론"]으로 기재하세요."""
 ───────────────────────────────────────
 {rag_block}
 ───────────────────────────────────────
-위 RAG 정보는 사전에 수집·정제된 신뢰도 높은 데이터입니다. 실시간 리뷰와 상충할 경우 양쪽 근거를 모두 반영하세요."""
+위 RAG 정보는 사전에 수집·정제된 신뢰도 높은 데이터입니다.
+【중요】RAG 데이터에서 언급된 사실은 evidence 배열에 원문을 그대로 인용하세요.
+RAG 데이터와 실시간 리뷰가 상충할 경우 양쪽 근거를 모두 반영하고 conflicts_with_official에 기재하세요."""
 
     # ── 키워드 경고 검증 섹션 ────────────────────────────────────────────────
     keyword_section = ""
@@ -326,10 +364,12 @@ false_positive_warnings 배열에 카테고리와 이유를 기재하세요."""
     category_context = _CATEGORY_CONTEXT.get(category, "")
 
     prompt = f"""당신은 교통약자 시설 접근성 분석 전문가입니다.
-리뷰 데이터 유무와 관계없이 반드시 각 항목을 추론하여 구체적인 결과를 반환해야 합니다.
-"알 수 없음" 또는 null을 남용하지 말고, 합리적 추론이 가능하면 수치와 근거를 제시하세요.
+【핵심 원칙】evidence 배열에는 반드시 수집 데이터(블로그·지식iN·RAG)에서 직접 발견한 원문만 인용하세요.
+수집 데이터에 언급이 없는 사실은 evidence를 []로 두고 inference_note에 추론 근거를 명시하세요.
+available(true/false)의 경우 법적 의무 기준으로 추론 가능한 항목은 추론해도 되지만,
+evidence는 수집 데이터 인용만 허용하고, 추론 근거는 inference_note에만 기재하세요.
 특히 accessible_parking·accessible_restroom·elevator는 리뷰 언급이 없어도
-아래 기준으로 반드시 추론하세요:
+아래 법적 기준으로 available 여부를 추론하세요:
 - 한국 「장애인·노인·임산부 등의 편의증진 보장에 관한 법률」 상 공공 관광지·해수욕장·문화시설은
   장애인 전용 주차구역, 장애인 화장실, 경사로 설치가 의무화되어 있습니다.
 - 공식 등록 편의시설 정보에 '주차 안내'가 존재하면 장애인 주차구역도 함께 운영됩니다.
@@ -738,6 +778,7 @@ def validate_accessibility(
     official_info: dict = None,
     image_urls: list = None,
     category: str = "",
+    include_sources: bool = False,
 ) -> dict:
     """
     네이버 수집 → 키워드 탐지 → GPT 추론 → Vision 분석 → 검증 결과 반환
@@ -747,32 +788,33 @@ def validate_accessibility(
     # 1) 네이버 데이터 수집 (키 없으면 빈 리스트 — GPT 지식 추론으로 대체)
     blog_texts = search_blogs(facility_name, location_hint, category=category)
     kin_texts  = search_kin(facility_name, location_hint, category=category)
+    news_texts = search_news(facility_name, location_hint)
 
     # 숙박 카테고리: 공식 홈페이지 추가 수집
     hotel_web_texts: list[dict] = []
     if category == "숙박":
         hotel_web_texts = fetch_hotel_official_content(facility_name)
 
-    all_texts = blog_texts + kin_texts + hotel_web_texts
+    all_texts = blog_texts + kin_texts + news_texts + hotel_web_texts
     naver_available = bool(NAVER_CLIENT_ID and NAVER_CLIENT_SECRET
                            and NAVER_CLIENT_ID != "your_naver_client_id_here")
 
-    # 1-a) 블로그 본문 전체 fetch (아직 full_content 없는 상위 3건만)
-    for item in blog_texts[:3]:
-        if item.get("full_content"):
-            continue
+    # 1-a) 블로그·뉴스 본문 전체 fetch — 상위 10건 (snippet만으론 분석 정확도 부족)
+    fetch_targets = [t for t in blog_texts if not t.get("full_content")][:8] + \
+                    [t for t in news_texts if not t.get("full_content")][:4]
+    for item in fetch_targets:
         link = item.get("link", "")
         if link:
-            full = fetch_blog_content(link, max_chars=2000, timeout=3)
+            full = fetch_blog_content(link, max_chars=3000, timeout=4)
             if full:
                 item["full_content"] = full
 
-    # 1-b) Vector DB 사전 수집 청크 조회
+    # 1-b) Vector DB 사전 수집 청크 조회 (Hybrid Search + Reranking)
     rag_chunks: list[dict] = []
     try:
         import vector_store as _vs
         rag_chunks = _vs.search_tour_overviews_hybrid(
-            f"{facility_name} 접근성 휠체어", top_k=3
+            f"{facility_name} 접근성 휠체어 단차 경사로", top_k=5
         )
         if hasattr(_vs, "search_accessibility_chunks"):
             rag_chunks += _vs.search_accessibility_chunks(
@@ -838,13 +880,15 @@ def validate_accessibility(
     else:
         overall_risk = gpt_result.get("overall_risk", "❓ 알 수 없음")
 
-    return {
+    result = {
         "facility_name": facility_name,
         "address": address,
         "overall_risk": overall_risk,
         "data_collected": {
             "blog_posts":        len(blog_texts),
             "blog_full_content": sum(1 for t in blog_texts if t.get("full_content")),
+            "news_posts":        len(news_texts),
+            "news_full_content": sum(1 for t in news_texts if t.get("full_content")),
             "kin_posts":         len(kin_texts),
             "total":             len(all_texts),
             "naver_available":   naver_available,
@@ -865,3 +909,12 @@ def validate_accessibility(
             for t in all_texts[:5]
         ],
     }
+    if include_sources:
+        result["_sources"] = {
+            "blog_texts":  blog_texts,
+            "kin_texts":   kin_texts,
+            "news_texts":  news_texts,
+            "all_texts":   all_texts,
+            "rag_chunks":  rag_chunks,
+        }
+    return result
