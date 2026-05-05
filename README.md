@@ -1,4 +1,4 @@
-<div align="center">
+<img width="1024" height="794" alt="image" src="https://github.com/user-attachments/assets/278cb932-a078-49af-bc58-d89e8cada142" /><div align="center">
 
 <!-- logo -->
 
@@ -111,6 +111,9 @@ Ngrok, Streamlit Cloud 배포
 <br />
 
 ## 🛠️ 프로젝트 아키텍쳐
+
+<img width="1024" height="794" alt="image" src="https://github.com/user-attachments/assets/75b6161c-8e9c-494b-b9f6-71550d59099a" />
+
 
 ![no-image](https://user-images.githubusercontent.com/80824750/208294567-738dd273-e137-4bbf-8307-aff64258fe03.png)
 
